@@ -4,9 +4,9 @@
 
 ### ⌗ FEATURES
 
-- **Multi-Backend Support**: Use standard JSON files by default, or opt-in to SQLite, Redis, MySQL, or PostgreSQL.
+- **Multi-Backend Support**: Use standard JSON files by default, or opt-in to SQLite, Redis, MySQL, MongoDB or PostgreSQL.
 - **Lazy Loading**: Messages are loaded from storage only when accessed, optimizing memory usage.
-- **Optional Dependencies**: Heavy database drivers (better-sqlite3, redis, mysql2, pg) are dynamically imported. Your project compiles successfully even if these databases are not installed.
+- **Optional Dependencies**: Heavy database drivers (better-sqlite3, redis, mysql2, pg, mongodb) are dynamically imported. Your project compiles successfully even if these databases are not installed.
 - **Anti-Corruption Safeguards**: Uses Atomic Writes (temp files) for JSON, WAL mode for SQLite, and transaction/connection pools for relational databases.
 Easy Integration: Hooks directly into the Baileys client instance with a single bind() call.
 
@@ -29,6 +29,9 @@ yarn add redis
 
 # For MySQL
 yarn add mysql2
+
+# For MongoDB
+yarn add mongodb
 
 # For PostgreSQL
 yarn add pg
@@ -85,30 +88,30 @@ store.config({
 })
 
 async function connectToWA() {
-    const client = makeWASocket({
-        // Your Baileys configuration
-    })
+   const client = makeWASocket({
+      // Your Baileys configuration
+   })
 
-    // Bind store methods directly to the client instance
-    store.bind(client)
+   // Bind store methods directly to the client instance
+   store.bind(client)
 
-    client.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return
+   client.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return
 
-        for (const msg of messages) {
-           const jid = msg.key.remoteJid
-           if (!jid) continue
+      for (const msg of messages) {
+         const jid = msg.key.remoteJid
+         if (!jid) continue
 
-           // Save incoming message
-           client.addMessage(jid, msg)
+         // Save incoming message
+         client.addMessage(jid, msg)
 
-           // Retrieve the single message
-           const singleMsg = client.loadMessage(jid, msg.key.id)
+         // Retrieve the single message
+         const singleMsg = client.loadMessage(jid, msg.key.id)
 
-           // Retrieve latest 10 messages from this chat
-           const history = client.loadMessages(jid, 10)
-        }
-    })
+         // Retrieve latest 10 messages from this chat
+         const history = client.loadMessages(jid, 10)
+      }
+   })
 }
 
 connectToWA()
