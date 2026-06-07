@@ -12,6 +12,14 @@ import extra from './lib/listeners-extra.js'
 import { models, structure } from './lib/models.js'
 import system from './lib/adapter.js'
 
+import memory from '@neoxr/message-store'
+const store = memory.default || memory
+
+store.config({
+   dir: 'messages',
+   max: 250
+})
+
 const connect = async () => {
    try {
       const client = new Client({
@@ -29,7 +37,7 @@ const connect = async () => {
             session: 'session',
             config: process.env.DATABASE_URL || ''
          },
-         engines: [baileys], // Init baileys as main engine
+         engines: [baileys, store], // Init baileys as main engine
          debug: false // Set to 'true' if you want to see how this module works :v
       }, {
          // This is the Baileys connection options section
@@ -68,6 +76,8 @@ const connect = async () => {
       })
 
       client.once('ready', async () => {
+         store.bind(client.sock)
+
          const ramCheck = setInterval(() => {
             var ramUsage = process.memoryUsage().rss
             if (ramUsage >= bytes(Config.ram_limit)) {
