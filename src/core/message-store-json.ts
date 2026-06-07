@@ -68,6 +68,7 @@ class MessageStore {
          const fileContent = fs.readFileSync(filePath, 'utf-8')
          this.messages[jid] = JSON.parse(fileContent) as WAMessage[]
       } catch (error) {
+         console.error(`[message-store-json] Failed to load JID ${jid} from JSON, creating backup:`, error)
          const backupPath = `${filePath}.corrupt-${Date.now()}`
          try { fs.renameSync(filePath, backupPath) } catch { }
          this.messages[jid] = []
@@ -96,7 +97,7 @@ class MessageStore {
 
          await Promise.all(savePromises)
       } catch (error) {
-         console.error('Error saving messages:', error)
+         console.error('[message-store-json] Error saving messages:', error)
       } finally {
          this.isSaving = false
       }

@@ -10,6 +10,7 @@ export interface WAMessage {
 export interface StoreConfig {
    dir?: string
    max?: number
+   uri?: string
 }
 
 export interface BotClient {
