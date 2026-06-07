@@ -27,10 +27,8 @@ class MessageStore {
       this.client = null
       this.storeDir = path.join(process.cwd(), '.cache', dir)
       this.max = max
-      this.uri = uri || process.env.USE_STORE
+      this.uri = uri || process.env.DATABASE_URL
       this.messages = Object.create(null) as Record<string, WAMessage[]>
-
-      this.initDB()
    }
 
    private async initDB(): Promise<void> {
@@ -81,8 +79,6 @@ class MessageStore {
          if (this.client) {
             this.client.messages = this.messages
          }
-
-         console.info('[message-store-mysql] Successfully connected to MySQL and loaded data.')
       } catch (error) {
          console.error('[message-store-mysql] Failed to initialize MySQL:', error)
          this.pool = null
@@ -114,6 +110,8 @@ class MessageStore {
 
    public bind<T extends BotClient>(client: T): T {
       this.client = client
+
+      this.initDB()
 
       client.loadMessage = this.loadMessage.bind(this)
       client.loadMessages = this.loadMessages.bind(this)

@@ -9,8 +9,8 @@ const loadRedis = async () => {
       const module = await import(moduleName)
       RedisConstructor = module.createClient ? module : (module.default || module)
       return RedisConstructor
-   } catch (e) { 
-      return null 
+   } catch (e) {
+      return null
    }
 }
 
@@ -29,18 +29,17 @@ class MessageStore {
       this.client = null
       this.storeDir = path.join(process.cwd(), '.cache', dir)
       this.max = max
-      this.uri = uri || process.env.USE_STORE
+      this.uri = uri || process.env.REDIS_URL
       this.messages = Object.create(null) as Record<string, WAMessage[]>
       this.dirtyJids = new Set<string>()
       this.isSaving = false
 
-      this.initDB()
       setInterval(() => this.checkAndSave(), 15000)
    }
 
    private async initDB(): Promise<void> {
       const RedisModule = await loadRedis()
-      
+
       if (!RedisModule || !RedisModule.createClient) {
          console.warn('[message-store-redis] Redis module not installed! Running in RAM-only mode.')
          return
@@ -54,12 +53,12 @@ class MessageStore {
       if (this.redis) {
          try {
             await this.redis.disconnect()
-         } catch (e) {}
+         } catch (e) { }
       }
 
       try {
          this.redis = RedisModule.createClient({ url: this.uri })
-         
+
          this.redis.on('error', (err: any) => {
             console.error('[message-store-redis] Redis Client Error:', err)
          })
@@ -92,7 +91,7 @@ class MessageStore {
       if (dir) {
          this.storeDir = path.join(process.cwd(), '.cache', dir)
       }
-      
+
       if (max !== undefined) {
          this.max = max
       }
@@ -111,6 +110,8 @@ class MessageStore {
 
    public bind<T extends BotClient>(client: T): T {
       this.client = client
+
+      this.initDB()
 
       client.loadMessage = this.loadMessage.bind(this)
       client.loadMessages = this.loadMessages.bind(this)
@@ -135,7 +136,7 @@ class MessageStore {
 
       try {
          const multi = this.redis.multi()
-         
+
          jidsToSave.forEach((jid) => {
             const data = this.messages[jid]
             if (data) {

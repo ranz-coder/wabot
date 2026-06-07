@@ -75,8 +75,6 @@ class MessageStore {
             )
          `)
          this.getAllStmt = this.db.prepare('SELECT data FROM messages WHERE jid = ? ORDER BY created_at ASC')
-
-         console.info('[message-store-sqlite] Successfully initialized SQLite database.')
       } catch (error) {
          console.error('[message-store-sqlite] Failed to initialize SQLite database:', error)
          this.db = null
