@@ -1,16 +1,18 @@
 import { BotClient, WAMessage, StoreConfig } from '../interface.js'
 import fs from 'node:fs'
 import path from 'node:path'
-import type Database from 'better-sqlite3' // Hanya import tipe agar tidak error di runtime
 
 let DatabaseConstructor: any = null
 const loadSqlite = async () => {
    if (DatabaseConstructor) return DatabaseConstructor
    try {
-      const module = await import('better-sqlite3')
+      const moduleName = String('better-sqlite3')
+      const module = await import(moduleName)
       DatabaseConstructor = module.default || module
       return DatabaseConstructor
-   } catch (e) { return null }
+   } catch (e) {
+      return null
+   }
 }
 
 class MessageStore {
@@ -19,10 +21,10 @@ class MessageStore {
    public max: number
    public messages: Record<string, WAMessage[]>
 
-   private db: Database.Database | null = null
-   private insertStmt: Database.Statement | null = null
-   private cleanupStmt: Database.Statement | null = null
-   private getAllStmt: Database.Statement | null = null
+   private db: any = null
+   private insertStmt: any = null
+   private cleanupStmt: any = null
+   private getAllStmt: any = null
 
    constructor(dir: string = 'messages', max: number = 250) {
       this.client = null
@@ -30,13 +32,12 @@ class MessageStore {
       this.max = max
       this.messages = Object.create(null) as Record<string, WAMessage[]>
 
-      // Menjalankan inisialisasi secara asinkron (background)
       this.initDB()
    }
 
    private async initDB(): Promise<void> {
       const SQLite = await loadSqlite()
-      
+
       if (!SQLite) {
          console.warn('[MessageStore] Module better-sqlite3 tidak terinstal! Berjalan di mode RAM-only.')
          return
@@ -47,12 +48,12 @@ class MessageStore {
       }
 
       const dbPath = path.join(this.storeDir, 'store.db')
-      
+
       if (this.db) {
          this.db.close()
       }
 
-      this.db = new SQLite(dbPath) as Database.Database
+      this.db = new SQLite(dbPath)
       this.db.pragma('journal_mode = WAL')
 
       this.db.exec(`
@@ -85,7 +86,7 @@ class MessageStore {
             dbNeedsReinit = true
          }
       }
-      
+
       if (max !== undefined) {
          this.max = max
       }
@@ -111,7 +112,6 @@ class MessageStore {
    private loadJidData(jid: string): void {
       if (this.messages[jid]) return
 
-      // Jika modul sqlite tidak ada, siapkan array kosong saja di RAM
       if (!this.getAllStmt) {
          this.messages[jid] = []
          return
@@ -147,12 +147,10 @@ class MessageStore {
 
       const msgId = msg.key?.id || (msg as any).id
 
-      // 1. Terapkan Max Limit ke Memory/RAM (Bekerja otomatis meski SQLite gagal diload)
       if (this.messages[jid].length > this.max) {
          this.messages[jid].splice(0, this.messages[jid].length - this.max)
       }
 
-      // 2. Simpan ke SQLite (Hanya dieksekusi jika module berhasil diload & database siap)
       if (msgId && this.insertStmt && this.cleanupStmt) {
          try {
             this.insertStmt.run(jid, msgId, JSON.stringify(msg), Date.now())
