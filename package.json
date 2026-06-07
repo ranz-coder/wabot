@@ -20,11 +20,10 @@
     "url": "git+https://github.com/neoxr/neoxr-bot.git#utils/message-store"
   },
   "keywords": [
-    "whattapp-bot",
-    "whatsapp-api",
-    "bot",
-    "whatsapp",
-    "wabot",
+    "store",
+    "message-store",
+    "message-cache",
+    "whatsap",
     "baileys"
   ],
   "author": "Wildan Izzudin",
@@ -33,18 +32,17 @@
     "url": "https://github.com/neoxr/neoxr-bot/issues"
   },
   "homepage": "https://github.com/neoxr/neoxr-bot#readme",
-  "dependencies": {},
   "peerDependencies": {
     "better-sqlite3": "~12.1.1",
-    "express": "~4.16.4",
     "mongodb": "~4.9.0",
-    "mysql2": "~3.12.0"
+    "mysql2": "~3.12.0",
+    "pg": "8.13.1"
   },
   "peerDependenciesMeta": {
     "better-sqlite3": {
       "optional": true
     },
-    "express": {
+    "mongodb": {
       "optional": true
     },
     "mysql2": {
