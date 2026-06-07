@@ -49,7 +49,7 @@ class MessageStore {
       if (this.pool) {
          try {
             await this.pool.end()
-         } catch (e) { }
+         } catch (e) {}
       }
 
       try {
@@ -66,7 +66,7 @@ class MessageStore {
          `)
 
          const [rows]: any = await this.pool.query('SELECT jid, data FROM messages ORDER BY created_at ASC')
-
+         
          const loadedMessages = Object.create(null) as Record<string, WAMessage[]>
          for (const row of rows) {
             if (!loadedMessages[row.jid]) {
@@ -74,13 +74,15 @@ class MessageStore {
             }
             try {
                loadedMessages[row.jid].push(JSON.parse(row.data))
-            } catch { }
+            } catch {}
          }
 
          this.messages = loadedMessages
          if (this.client) {
             this.client.messages = this.messages
          }
+
+         console.info('[message-store-mysql] Successfully connected to MySQL and loaded data.')
       } catch (error) {
          console.error('[message-store-mysql] Failed to initialize MySQL:', error)
          this.pool = null
@@ -153,11 +155,11 @@ class MessageStore {
       }
 
       if (msgId && this.pool) {
-         this.pool.execute(
+         this.pool.query(
             'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
             [jid, msgId, JSON.stringify(msg), Date.now()]
          ).then(() => {
-            return this.pool.execute(
+            return this.pool.query(
                'DELETE FROM messages WHERE jid = ? AND id NOT IN (SELECT id FROM (SELECT id FROM messages WHERE jid = ? ORDER BY created_at DESC LIMIT ?) as tmp)',
                [jid, jid, this.max]
             )
