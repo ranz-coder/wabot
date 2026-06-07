@@ -1,14 +1,14 @@
 import { BotClient, WAMessage, StoreConfig } from '../interface.js'
 import path from 'node:path'
 
-let MySQLConstructor: any = null
-const loadMySQL = async () => {
-   if (MySQLConstructor) return MySQLConstructor
+let MongoConstructor: any = null
+const loadMongo = async () => {
+   if (MongoConstructor) return MongoConstructor
    try {
-      const moduleName = String('mysql2/promise')
+      const moduleName = String('mongodb')
       const module = await import(moduleName)
-      MySQLConstructor = module.default || module
-      return MySQLConstructor
+      MongoConstructor = module.MongoClient || module.default?.MongoClient || module
+      return MongoConstructor
    } catch (e) {
       return null
    }
@@ -21,7 +21,9 @@ class MessageStore {
    public uri: string | undefined
    public messages: Record<string, WAMessage[]>
 
-   private pool: any = null
+   private mongoClient: any = null
+   private db: any = null
+   private messagesCollection: any = null
 
    constructor(dir: string = 'messages', max: number = 250, uri?: string) {
       this.client = null
@@ -32,47 +34,41 @@ class MessageStore {
    }
 
    private async initDB(): Promise<void> {
-      const mysql = await loadMySQL()
+      const MongoClient = await loadMongo()
 
-      if (!mysql) {
-         console.warn('[message-store-mysql] mysql2 module not installed! Running in RAM-only mode.')
+      if (!MongoClient) {
+         console.warn('[message-store-mongodb] mongodb module not installed! Running in RAM-only mode.')
          return
       }
 
       if (!this.uri) {
-         console.warn('[message-store-mysql] MySQL URI not provided! Running in RAM-only mode.')
+         console.warn('[message-store-mongodb] MongoDB URI not provided! Running in RAM-only mode.')
          return
       }
 
-      if (this.pool) {
+      if (this.mongoClient) {
          try {
-            await this.pool.end()
-         } catch (e) {}
+            await this.mongoClient.close()
+         } catch (e) { }
       }
 
       try {
-         this.pool = mysql.createPool(this.uri)
+         this.mongoClient = new MongoClient(this.uri)
+         await this.mongoClient.connect()
 
-         await this.pool.query(`
-            CREATE TABLE IF NOT EXISTS messages (
-               jid VARCHAR(255) NOT NULL,
-               id VARCHAR(255) NOT NULL,
-               data LONGTEXT NOT NULL,
-               created_at BIGINT NOT NULL,
-               PRIMARY KEY (jid, id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-         `)
+         this.db = this.mongoClient.db()
+         this.messagesCollection = this.db.collection('messages')
 
-         const [rows]: any = await this.pool.query('SELECT jid, data FROM messages ORDER BY created_at ASC')
-         
+         await this.messagesCollection.createIndex({ jid: 1, id: 1 }, { unique: true })
+
+         const docs = await this.messagesCollection.find().sort({ created_at: 1 }).toArray()
+
          const loadedMessages = Object.create(null) as Record<string, WAMessage[]>
-         for (const row of rows) {
-            if (!loadedMessages[row.jid]) {
-               loadedMessages[row.jid] = []
+         for (const doc of docs) {
+            if (!loadedMessages[doc.jid]) {
+               loadedMessages[doc.jid] = []
             }
-            try {
-               loadedMessages[row.jid].push(JSON.parse(row.data))
-            } catch {}
+            loadedMessages[doc.jid].push(doc.data)
          }
 
          this.messages = loadedMessages
@@ -80,8 +76,10 @@ class MessageStore {
             this.client.messages = this.messages
          }
       } catch (error) {
-         console.error('[message-store-mysql] Failed to initialize MySQL:', error)
-         this.pool = null
+         console.error('[message-store-mongodb] Failed to initialize MongoDB:', error)
+         this.mongoClient = null
+         this.db = null
+         this.messagesCollection = null
       }
    }
 
@@ -152,17 +150,26 @@ class MessageStore {
          this.messages[jid].splice(0, this.messages[jid].length - this.max)
       }
 
-      if (msgId && this.pool) {
-         this.pool.query(
-            'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
-            [jid, msgId, JSON.stringify(msg), Date.now()]
-         ).then(() => {
-            return this.pool.query(
-               'DELETE FROM messages WHERE jid = ? AND id NOT IN (SELECT id FROM (SELECT id FROM messages WHERE jid = ? ORDER BY created_at DESC LIMIT ?) as tmp)',
-               [jid, jid, this.max]
-            )
+      if (msgId && this.messagesCollection) {
+         this.messagesCollection.updateOne(
+            { jid, id: msgId },
+            { $set: { data: msg, created_at: Date.now() } },
+            { upsert: true }
+         ).then(async () => {
+            const docsToKeep = await this.messagesCollection
+               .find({ jid })
+               .sort({ created_at: -1 })
+               .limit(this.max)
+               .project({ id: 1 })
+               .toArray()
+
+            const keepIds = docsToKeep.map((d: any) => d.id)
+            await this.messagesCollection.deleteMany({
+               jid,
+               id: { $nin: keepIds }
+            })
          }).catch((error: any) => {
-            console.error('[message-store-mysql] Failed to save message to MySQL:', error)
+            console.error('[message-store-mongodb] Failed to save message to MongoDB:', error)
          })
       }
    }

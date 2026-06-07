@@ -29,7 +29,7 @@ class MessageStore {
       this.client = null
       this.storeDir = path.join(process.cwd(), '.cache', dir)
       this.max = max
-      this.uri = uri || process.env.REDIS_URL
+      this.uri = uri || process.env.USE_STORE
       this.messages = Object.create(null) as Record<string, WAMessage[]>
       this.dirtyJids = new Set<string>()
       this.isSaving = false
