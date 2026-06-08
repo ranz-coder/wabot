@@ -7,6 +7,10 @@ class MessageStore {
    public storeDir: string
    public max: number
    public messages: Record<string, WAMessage[]>
+
+   private _messages: Record<string, WAMessage[]>
+   private loadedJids: Set<string>
+   private maxCachedJids: number
    private dirtyJids: Set<string>
    private isSaving: boolean
 
@@ -14,14 +18,39 @@ class MessageStore {
       this.client = null
       this.storeDir = path.join(process.cwd(), '.cache', dir)
       this.max = max
+      this.maxCachedJids = 50
 
       if (!fs.existsSync(this.storeDir)) {
          fs.mkdirSync(this.storeDir, { recursive: true })
       }
 
-      this.messages = Object.create(null) as Record<string, WAMessage[]>
+      this._messages = Object.create(null) as Record<string, WAMessage[]>
+      this.loadedJids = new Set<string>()
       this.dirtyJids = new Set<string>()
       this.isSaving = false
+
+      const self = this
+      this.messages = new Proxy(this._messages, {
+         get(target, prop, receiver) {
+            if (typeof prop === 'string' && !['prototype', 'constructor', 'toJSON'].includes(prop)) {
+               self.loadJidData(prop)
+               self.touchJid(prop)
+            }
+            return Reflect.get(target, prop, receiver)
+         },
+         set(target, prop, value, receiver) {
+            if (typeof prop === 'string' && !['prototype', 'constructor', 'toJSON'].includes(prop)) {
+               self.touchJid(prop)
+            }
+            return Reflect.set(target, prop, value, receiver)
+         },
+         deleteProperty(target, prop) {
+            if (typeof prop === 'string') {
+               self.loadedJids.delete(prop)
+            }
+            return Reflect.deleteProperty(target, prop)
+         }
+      }) as Record<string, WAMessage[]>
 
       setInterval(() => this.checkAndSave(), 15000)
    }
@@ -56,22 +85,37 @@ class MessageStore {
    }
 
    private loadJidData(jid: string): void {
-      if (this.messages[jid]) return
+      if (this._messages[jid]) return
 
       const filePath = this.getFilePath(jid)
       if (!fs.existsSync(filePath)) {
-         this.messages[jid] = []
+         this._messages[jid] = []
          return
       }
 
       try {
          const fileContent = fs.readFileSync(filePath, 'utf-8')
-         this.messages[jid] = JSON.parse(fileContent) as WAMessage[]
+         this._messages[jid] = JSON.parse(fileContent) as WAMessage[]
       } catch (error) {
          console.error(`[message-store-json] Failed to load JID ${jid} from JSON, creating backup:`, error)
          const backupPath = `${filePath}.corrupt-${Date.now()}`
          try { fs.renameSync(filePath, backupPath) } catch { }
-         this.messages[jid] = []
+         this._messages[jid] = []
+      }
+   }
+
+   private touchJid(jid: string): void {
+      this.loadedJids.delete(jid)
+      this.loadedJids.add(jid)
+
+      if (this.loadedJids.size > this.maxCachedJids) {
+         for (const oldJid of this.loadedJids) {
+            if (this.dirtyJids.has(oldJid)) continue
+
+            delete this._messages[oldJid]
+            this.loadedJids.delete(oldJid)
+            break
+         }
       }
    }
 
@@ -84,7 +128,7 @@ class MessageStore {
 
       try {
          const savePromises = jidsToSave.map(async (jid) => {
-            const data = this.messages[jid]
+            const data = this._messages[jid]
             if (!data) return
 
             const filePath = this.getFilePath(jid)
@@ -105,12 +149,14 @@ class MessageStore {
 
    public loadMessage(jid: string, id: string): WAMessage | null {
       this.loadJidData(jid)
-      return this.messages[jid]?.find(v => v.key?.id === id || v.id === id) || null
+      this.touchJid(jid)
+      return this._messages[jid]?.find(v => v.key?.id === id || v.id === id) || null
    }
 
    public loadMessages(jid: string, count?: number): WAMessage[] | null {
       this.loadJidData(jid)
-      const list = this.messages[jid]
+      this.touchJid(jid)
+      const list = this._messages[jid]
       if (!list || list.length === 0) return null
 
       const slice = count ? list.slice(-count) : list
@@ -120,13 +166,14 @@ class MessageStore {
    public addMessage(jid: string, msg: WAMessage): void {
       this.loadJidData(jid)
 
-      this.messages[jid].push(msg)
+      this._messages[jid].push(msg)
 
-      if (this.messages[jid].length > this.max) {
-         this.messages[jid].splice(0, this.messages[jid].length - this.max)
+      if (this._messages[jid].length > this.max) {
+         this._messages[jid].splice(0, this._messages[jid].length - this.max)
       }
 
       this.dirtyJids.add(jid)
+      this.touchJid(jid)
    }
 }
 

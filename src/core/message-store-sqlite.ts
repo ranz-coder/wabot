@@ -21,6 +21,9 @@ class MessageStore {
    public max: number
    public messages: Record<string, WAMessage[]>
 
+   private _messages: Record<string, WAMessage[]>
+   private loadedJids: Set<string>
+   private maxCachedJids: number
    private db: any = null
    private insertStmt: any = null
    private cleanupStmt: any = null
@@ -30,7 +33,33 @@ class MessageStore {
       this.client = null
       this.storeDir = path.join(process.cwd(), '.cache', dir)
       this.max = max
-      this.messages = Object.create(null) as Record<string, WAMessage[]>
+
+      this._messages = Object.create(null) as Record<string, WAMessage[]>
+      this.loadedJids = new Set<string>()
+      this.maxCachedJids = 50
+
+      const self = this
+      this.messages = new Proxy(this._messages, {
+         get(target, prop, receiver) {
+            if (typeof prop === 'string' && !['prototype', 'constructor', 'toJSON'].includes(prop)) {
+               self.loadJidData(prop)
+               self.touchJid(prop)
+            }
+            return Reflect.get(target, prop, receiver)
+         },
+         set(target, prop, value, receiver) {
+            if (typeof prop === 'string' && !['prototype', 'constructor', 'toJSON'].includes(prop)) {
+               self.touchJid(prop)
+            }
+            return Reflect.set(target, prop, value, receiver)
+         },
+         deleteProperty(target, prop) {
+            if (typeof prop === 'string') {
+               self.loadedJids.delete(prop)
+            }
+            return Reflect.deleteProperty(target, prop)
+         }
+      }) as Record<string, WAMessage[]>
 
       this.initDB()
    }
@@ -115,30 +144,45 @@ class MessageStore {
    }
 
    private loadJidData(jid: string): void {
-      if (this.messages[jid]) return
+      if (this._messages[jid]) return
 
       if (!this.getAllStmt) {
-         this.messages[jid] = []
+         this._messages[jid] = []
          return
       }
 
       try {
          const rows = this.getAllStmt.all(jid) as { data: string }[]
-         this.messages[jid] = rows.map(row => JSON.parse(row.data) as WAMessage)
+         this._messages[jid] = rows.map(row => JSON.parse(row.data) as WAMessage)
       } catch (error) {
          console.error(`[message-store-sqlite] Failed to load JID ${jid} from SQLite:`, error)
-         this.messages[jid] = []
+         this._messages[jid] = []
+      }
+   }
+
+   private touchJid(jid: string): void {
+      this.loadedJids.delete(jid)
+      this.loadedJids.add(jid)
+
+      if (this.loadedJids.size > this.maxCachedJids) {
+         for (const oldJid of this.loadedJids) {
+            delete this._messages[oldJid]
+            this.loadedJids.delete(oldJid)
+            break
+         }
       }
    }
 
    public loadMessage(jid: string, id: string): WAMessage | null {
       this.loadJidData(jid)
-      return this.messages[jid]?.find(v => v.key?.id === id || (v as any).id === id) || null
+      this.touchJid(jid)
+      return this._messages[jid]?.find(v => v.key?.id === id || (v as any).id === id) || null
    }
 
    public loadMessages(jid: string, count?: number): WAMessage[] | null {
       this.loadJidData(jid)
-      const list = this.messages[jid]
+      this.touchJid(jid)
+      const list = this._messages[jid]
       if (!list || list.length === 0) return null
 
       const slice = count ? list.slice(-count) : list
@@ -148,13 +192,15 @@ class MessageStore {
    public addMessage(jid: string, msg: WAMessage): void {
       this.loadJidData(jid)
 
-      this.messages[jid].push(msg)
+      this._messages[jid].push(msg)
 
       const msgId = msg.key?.id || (msg as any).id
 
-      if (this.messages[jid].length > this.max) {
-         this.messages[jid].splice(0, this.messages[jid].length - this.max)
+      if (this._messages[jid].length > this.max) {
+         this._messages[jid].splice(0, this._messages[jid].length - this.max)
       }
+
+      this.touchJid(jid)
 
       if (msgId && this.insertStmt && this.cleanupStmt) {
          try {

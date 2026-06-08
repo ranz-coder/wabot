@@ -21,6 +21,10 @@ class MessageStore {
    public uri: string | undefined
    public messages: Record<string, WAMessage[]>
 
+   private _messages: Record<string, WAMessage[]>
+   private loadedJids: Set<string>
+   private loadingJids: Set<string>
+   private maxCachedJids: number
    private pool: any = null
 
    constructor(dir: string = 'messages', max: number = 250, uri?: string) {
@@ -28,7 +32,34 @@ class MessageStore {
       this.storeDir = path.join(process.cwd(), '.cache', dir)
       this.max = max
       this.uri = uri || process.env.USE_STORE
-      this.messages = Object.create(null) as Record<string, WAMessage[]>
+
+      this._messages = Object.create(null) as Record<string, WAMessage[]>
+      this.loadedJids = new Set<string>()
+      this.loadingJids = new Set<string>()
+      this.maxCachedJids = 50
+
+      const self = this
+      this.messages = new Proxy(this._messages, {
+         get(target, prop, receiver) {
+            if (typeof prop === 'string' && !['prototype', 'constructor', 'toJSON'].includes(prop)) {
+               self.loadJidData(prop)
+               self.touchJid(prop)
+            }
+            return Reflect.get(target, prop, receiver)
+         },
+         set(target, prop, value, receiver) {
+            if (typeof prop === 'string' && !['prototype', 'constructor', 'toJSON'].includes(prop)) {
+               self.touchJid(prop)
+            }
+            return Reflect.set(target, prop, value, receiver)
+         },
+         deleteProperty(target, prop) {
+            if (typeof prop === 'string') {
+               self.loadedJids.delete(prop)
+            }
+            return Reflect.deleteProperty(target, prop)
+         }
+      }) as Record<string, WAMessage[]>
    }
 
    private async initDB(): Promise<void> {
@@ -62,23 +93,6 @@ class MessageStore {
                PRIMARY KEY (jid, id)
             )
          `)
-
-         const { rows }: any = await this.pool.query('SELECT jid, data FROM messages ORDER BY created_at ASC')
-
-         const loadedMessages = Object.create(null) as Record<string, WAMessage[]>
-         for (const row of rows) {
-            if (!loadedMessages[row.jid]) {
-               loadedMessages[row.jid] = []
-            }
-            try {
-               loadedMessages[row.jid].push(JSON.parse(row.data))
-            } catch { }
-         }
-
-         this.messages = loadedMessages
-         if (this.client) {
-            this.client.messages = this.messages
-         }
       } catch (error) {
          console.error('[message-store-pg] Failed to initialize PostgreSQL:', error)
          this.pool = null
@@ -122,19 +136,71 @@ class MessageStore {
    }
 
    private loadJidData(jid: string): void {
-      if (!this.messages[jid]) {
-         this.messages[jid] = []
+      if (!this._messages[jid]) {
+         this._messages[jid] = []
+         this.asyncLoadJid(jid)
+      }
+   }
+
+   private async asyncLoadJid(jid: string): Promise<void> {
+      if (!this.pool) return
+      this.loadingJids.add(jid)
+      try {
+         const { rows }: any = await this.pool.query(
+            'SELECT data FROM messages WHERE jid = $1 ORDER BY created_at ASC',
+            [jid]
+         )
+         const history: WAMessage[] = []
+         for (const row of rows) {
+            try {
+               history.push(JSON.parse(row.data))
+            } catch { }
+         }
+         const current = this._messages[jid] || []
+         const merged = [...history]
+         for (const msg of current) {
+            const id = msg.key?.id || (msg as any).id
+            const exists = merged.some(v => (v.key?.id === id || (v as any).id === id))
+            if (!exists) {
+               merged.push(msg)
+            }
+         }
+         if (merged.length > this.max) {
+            merged.splice(0, merged.length - this.max)
+         }
+         this._messages[jid] = merged
+      } catch (error) {
+         console.error(`[message-store-pg] Failed to load JID ${jid} from PostgreSQL:`, error)
+      } finally {
+         this.loadingJids.delete(jid)
+      }
+   }
+
+   private touchJid(jid: string): void {
+      this.loadedJids.delete(jid)
+      this.loadedJids.add(jid)
+
+      if (this.loadedJids.size > this.maxCachedJids) {
+         for (const oldJid of this.loadedJids) {
+            if (this.loadingJids.has(oldJid)) continue
+
+            delete this._messages[oldJid]
+            this.loadedJids.delete(oldJid)
+            break
+         }
       }
    }
 
    public loadMessage(jid: string, id: string): WAMessage | null {
       this.loadJidData(jid)
-      return this.messages[jid]?.find(v => v.key?.id === id || (v as any).id === id) || null
+      this.touchJid(jid)
+      return this._messages[jid]?.find(v => v.key?.id === id || (v as any).id === id) || null
    }
 
    public loadMessages(jid: string, count?: number): WAMessage[] | null {
       this.loadJidData(jid)
-      const list = this.messages[jid]
+      this.touchJid(jid)
+      const list = this._messages[jid]
       if (!list || list.length === 0) return null
 
       const slice = count ? list.slice(-count) : list
@@ -144,13 +210,15 @@ class MessageStore {
    public addMessage(jid: string, msg: WAMessage): void {
       this.loadJidData(jid)
 
-      this.messages[jid].push(msg)
+      this._messages[jid].push(msg)
 
       const msgId = msg.key?.id || (msg as any).id
 
-      if (this.messages[jid].length > this.max) {
-         this.messages[jid].splice(0, this.messages[jid].length - this.max)
+      if (this._messages[jid].length > this.max) {
+         this._messages[jid].splice(0, this._messages[jid].length - this.max)
       }
+
+      this.touchJid(jid)
 
       if (msgId && this.pool) {
          this.pool.query(

@@ -9,7 +9,7 @@ const store = process.env?.USE_STORE?.includes('mysql')
     ? mysqlStore
     : process.env?.USE_STORE?.includes('mongo')
         ? mongoStore
-        : process.env?.USE_STORE?.includes('pgsql')
+        : (process.env?.USE_STORE?.includes('pgsql') || process.env?.USE_STORE?.includes('postgres'))
             ? pgsqlStore
             : process.env?.USE_STORE?.includes('redis')
                 ? redisStore
