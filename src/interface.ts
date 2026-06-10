@@ -17,6 +17,6 @@ export interface BotClient {
    loadMessage?: (jid: string, id: string) => WAMessage | null
    loadMessages?: (jid: string, count?: number) => WAMessage[] | null
    addMessage?: (jid: string, msg: WAMessage) => void
-   messages?: Record<string, WAMessage[]>
+   getAllMessages?: (jid: string, offset?: number) => WAMessage[] & { count(): number; clear(): void }
    [key: string]: any
 }

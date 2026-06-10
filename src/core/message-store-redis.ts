@@ -19,65 +19,37 @@ class MessageStore {
    public storeDir: string
    public max: number
    public uri: string | undefined
-   public messages: Record<string, WAMessage[]>
+   public database: string
 
-   private _messages: Record<string, WAMessage[]>
-   private loadedJids: Set<string>
-   private loadingJids: Set<string>
-   private maxCachedJids: number
    private redis: any = null
-   private dirtyJids: Set<string>
-   private isSaving: boolean
+   private fallbackStore: Record<string, WAMessage[]> | null = null
 
    constructor(dir: string = 'messages', max: number = 250, uri?: string) {
       this.client = null
       this.storeDir = path.join(process.cwd(), '.cache', dir)
       this.max = max
       this.uri = uri || process.env.USE_STORE
-      
-      this._messages = Object.create(null) as Record<string, WAMessage[]>
-      this.loadedJids = new Set<string>()
-      this.loadingJids = new Set<string>()
-      this.maxCachedJids = 50
-      this.dirtyJids = new Set<string>()
-      this.isSaving = false
+      this.database = 'redis'
 
-      const self = this
-      this.messages = new Proxy(this._messages, {
-         get(target, prop, receiver) {
-            if (typeof prop === 'string' && !['prototype', 'constructor', 'toJSON'].includes(prop)) {
-               self.loadJidData(prop)
-               self.touchJid(prop)
-            }
-            return Reflect.get(target, prop, receiver)
-         },
-         set(target, prop, value, receiver) {
-            if (typeof prop === 'string' && !['prototype', 'constructor', 'toJSON'].includes(prop)) {
-               self.touchJid(prop)
-            }
-            return Reflect.set(target, prop, value, receiver)
-         },
-         deleteProperty(target, prop) {
-            if (typeof prop === 'string') {
-               self.loadedJids.delete(prop)
-            }
-            return Reflect.deleteProperty(target, prop)
-         }
-      }) as Record<string, WAMessage[]>
-
-      setInterval(() => this.checkAndSave(), 15000)
+      if (process.env?.USE_STORE?.includes('redis')) {
+         this.initDB()
+      } else {
+         this.fallbackStore = Object.create(null)
+      }
    }
 
    private async initDB(): Promise<void> {
       const RedisModule = await loadRedis()
 
-      if (!RedisModule || !RedisModule.createClient) {
+      if (!RedisModule || (!RedisModule.createClient && !RedisModule.default?.createClient)) {
          console.warn('[message-store-redis] Redis module not installed! Running in RAM-only mode.')
+         this.fallbackStore = Object.create(null)
          return
       }
 
       if (!this.uri) {
          console.warn('[message-store-redis] Redis URI not provided! Running in RAM-only mode.')
+         this.fallbackStore = Object.create(null)
          return
       }
 
@@ -88,7 +60,8 @@ class MessageStore {
       }
 
       try {
-         this.redis = RedisModule.createClient({ url: this.uri })
+         const createClient = RedisModule.createClient || RedisModule.default?.createClient
+         this.redis = createClient({ url: this.uri })
 
          this.redis.on('error', (err: any) => {
             console.error('[message-store-redis] Redis Client Error:', err)
@@ -96,8 +69,9 @@ class MessageStore {
 
          await this.redis.connect()
       } catch (error) {
-         console.error('[message-store-redis] Failed to initialize Redis:', error)
+         console.error('[message-store-redis] Failed to initialize Redis. Falling back to RAM-only mode:', error)
          this.redis = null
+         this.fallbackStore = Object.create(null)
       }
    }
 
@@ -127,126 +101,200 @@ class MessageStore {
    public bind<T extends BotClient>(client: T): T {
       this.client = client
 
-      this.initDB()
-
       client.loadMessage = this.loadMessage.bind(this)
       client.loadMessages = this.loadMessages.bind(this)
       client.addMessage = this.addMessage.bind(this)
-      client.messages = this.messages
+      client.getAllMessages = this.getAllMessages.bind(this)
 
       return client
    }
 
-   private loadJidData(jid: string): void {
-      if (!this._messages[jid]) {
-         this._messages[jid] = []
-         this.asyncLoadJid(jid)
-      }
-   }
-
-   private async asyncLoadJid(jid: string): Promise<void> {
-      if (!this.redis) return
-      this.loadingJids.add(jid)
+   private async getRedisData(jid: string): Promise<WAMessage[]> {
+      if (!this.redis) return []
       try {
          const raw = await this.redis.get(`msg_store:${jid}`)
-         if (raw) {
-            const history = JSON.parse(raw) as WAMessage[]
-            const current = this._messages[jid] || []
-            const merged = [...history]
-            for (const msg of current) {
-               const id = msg.key?.id || (msg as any).id
-               const exists = merged.some(v => (v.key?.id === id || (v as any).id === id))
-               if (!exists) {
-                  merged.push(msg)
-               }
-            }
-            if (merged.length > this.max) {
-               merged.splice(0, merged.length - this.max)
-            }
-            this._messages[jid] = merged
-         }
+         return raw ? (JSON.parse(raw) as WAMessage[]) : []
       } catch (error) {
          console.error(`[message-store-redis] Failed to load JID ${jid} from Redis:`, error)
-      } finally {
-         this.loadingJids.delete(jid)
+         return []
       }
    }
 
-   private touchJid(jid: string): void {
-      this.loadedJids.delete(jid)
-      this.loadedJids.add(jid)
+   private async setRedisData(jid: string, data: WAMessage[]): Promise<void> {
+      if (!this.redis) return
+      try {
+         await this.redis.set(`msg_store:${jid}`, JSON.stringify(data))
+      } catch (error) {
+         console.error(`[message-store-redis] Failed to save JID ${jid} to Redis:`, error)
+      }
+   }
 
-      if (this.loadedJids.size > this.maxCachedJids) {
-         for (const oldJid of this.loadedJids) {
-            if (this.dirtyJids.has(oldJid) || this.loadingJids.has(oldJid)) continue
+   public async loadMessage(jid: string, id: string): Promise<WAMessage | null> {
+      if (this.redis) {
+         const list = await this.getRedisData(jid)
+         return list.find(v => v.key?.id === id || (v as any).id === id) || null
+      }
 
-            delete this._messages[oldJid]
-            this.loadedJids.delete(oldJid)
-            break
+      if (this.fallbackStore) {
+         const list = this.fallbackStore[jid] || []
+         return list.find(v => v.key?.id === id || (v as any).id === id) || null
+      }
+
+      return null
+   }
+
+   public async loadMessages(jid: string, count?: number): Promise<WAMessage[] | null> {
+      if (this.redis) {
+         const list = await this.getRedisData(jid)
+         if (list.length === 0) return null
+
+         const slice = count ? list.slice(-count) : list
+         return [...slice].reverse()
+      }
+
+      if (this.fallbackStore) {
+         const list = this.fallbackStore[jid]
+         if (!list || list.length === 0) return null
+
+         const slice = count ? list.slice(-count) : list
+         return [...slice].reverse()
+      }
+
+      return null
+   }
+
+   public async addMessage(jid: string, msg: WAMessage): Promise<void> {
+      if (this.redis) {
+         const list = await this.getRedisData(jid)
+         list.push(msg)
+
+         if (list.length > this.max) {
+            list.splice(0, list.length - this.max)
+         }
+
+         await this.setRedisData(jid, list)
+         return
+      }
+
+      if (this.fallbackStore) {
+         if (!this.fallbackStore[jid]) {
+            this.fallbackStore[jid] = []
+         }
+         this.fallbackStore[jid].push(msg)
+
+         if (this.fallbackStore[jid].length > this.max) {
+            this.fallbackStore[jid].splice(0, this.fallbackStore[jid].length - this.max)
          }
       }
    }
 
-   private async checkAndSave(): Promise<void> {
-      if (this.isSaving || this.dirtyJids.size === 0 || !this.redis) return
+   public getAllMessages(jid: string, offset: number = 0): Promise<WAMessage[] & { count(): Promise<number>; clear(): Promise<void> }> & { count(): Promise<number>; clear(): Promise<void> } {
+      const self = this
 
-      this.isSaving = true
-      const jidsToSave = Array.from(this.dirtyJids)
-      this.dirtyJids.clear()
+      const promise = (async () => {
+         let list: WAMessage[] = []
 
-      try {
-         const multi = this.redis.multi()
+         if (self.redis) {
+            list = await self.getRedisData(jid)
+         } else if (self.fallbackStore) {
+            list = self.fallbackStore[jid] || []
+         }
 
-         jidsToSave.forEach((jid) => {
-            if (this.loadingJids.has(jid)) {
-               this.dirtyJids.add(jid)
+         const sliced = (offset > 0 ? list.slice(offset) : list) as WAMessage[] & { count(): Promise<number>; clear(): Promise<void> }
+
+         sliced.count = async () => {
+            if (self.redis) {
+               const currentList = await self.getRedisData(jid)
+               return Math.max(0, currentList.length - offset)
+            }
+            if (self.fallbackStore) {
+               const currentList = self.fallbackStore[jid] || []
+               return Math.max(0, currentList.length - offset)
+            }
+            return 0
+         }
+
+         sliced.clear = async () => {
+            if (self.redis) {
+               if (offset === 0) {
+                  try {
+                     await self.redis.del(`msg_store:${jid}`)
+                  } catch (error) {
+                     console.error(`[message-store-redis] Failed to clear JID ${jid} from Redis:`, error)
+                  }
+               } else {
+                  const currentList = await self.getRedisData(jid)
+                  if (offset < currentList.length) {
+                     const updated = currentList.slice(0, offset)
+                     await self.setRedisData(jid, updated)
+                  }
+               }
                return
             }
-            const data = this._messages[jid]
-            if (data) {
-               multi.set(`msg_store:${jid}`, JSON.stringify(data))
+
+            if (self.fallbackStore) {
+               if (offset === 0) {
+                  delete self.fallbackStore[jid]
+               } else {
+                  const currentList = self.fallbackStore[jid] || []
+                  if (offset < currentList.length) {
+                     self.fallbackStore[jid] = currentList.slice(0, offset)
+                  }
+               }
             }
-         })
+         }
 
-         await multi.exec()
-      } catch (error) {
-         console.error('[message-store-redis] Failed to save messages to Redis:', error)
-      } finally {
-         this.isSaving = false
-      }
-   }
+         return sliced
+      })()
 
-   public loadMessage(jid: string, id: string): WAMessage | null {
-      this.loadJidData(jid)
-      this.touchJid(jid)
-      return this._messages[jid]?.find(v => v.key?.id === id || (v as any).id === id) || null
-   }
+      const promiseWithMethods = promise as any
 
-   public loadMessages(jid: string, count?: number): WAMessage[] | null {
-      this.loadJidData(jid)
-      this.touchJid(jid)
-      const list = this._messages[jid]
-      if (!list || list.length === 0) return null
-
-      const slice = count ? list.slice(-count) : list
-      return [...slice].reverse()
-   }
-
-   public addMessage(jid: string, msg: WAMessage): void {
-      this.loadJidData(jid)
-
-      this._messages[jid].push(msg)
-
-      if (this._messages[jid].length > this.max) {
-         this._messages[jid].splice(0, this._messages[jid].length - this.max)
+      promiseWithMethods.count = async () => {
+         if (self.redis) {
+            const currentList = await self.getRedisData(jid)
+            return Math.max(0, currentList.length - offset)
+         }
+         if (self.fallbackStore) {
+            const currentList = self.fallbackStore[jid] || []
+            return Math.max(0, currentList.length - offset)
+         }
+         return 0
       }
 
-      this.dirtyJids.add(jid)
-      this.touchJid(jid)
+      promiseWithMethods.clear = async () => {
+         if (self.redis) {
+            if (offset === 0) {
+               try {
+                  await self.redis.del(`msg_store:${jid}`)
+               } catch (error) {
+                  console.error(`[message-store-redis] Failed to clear JID ${jid} from Redis:`, error)
+               }
+            } else {
+               const currentList = await self.getRedisData(jid)
+               if (offset < currentList.length) {
+                  const updated = currentList.slice(0, offset)
+                  await self.setRedisData(jid, updated)
+               }
+            }
+            return
+         }
+
+         if (self.fallbackStore) {
+            if (offset === 0) {
+               delete self.fallbackStore[jid]
+            } else {
+               const currentList = self.fallbackStore[jid] || []
+               if (offset < currentList.length) {
+                  self.fallbackStore[jid] = currentList.slice(0, offset)
+               }
+            }
+         }
+      }
+
+      return promiseWithMethods
    }
 }
 
 const store = new MessageStore('messages')
 
-export const messages = store.messages
 export default store

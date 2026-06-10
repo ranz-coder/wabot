@@ -6,53 +6,21 @@ class MessageStore {
    public client: BotClient | null
    public storeDir: string
    public max: number
-   public messages: Record<string, WAMessage[]>
+   public database: string
 
-   private _messages: Record<string, WAMessage[]>
-   private loadedJids: Set<string>
-   private maxCachedJids: number
-   private dirtyJids: Set<string>
-   private isSaving: boolean
+   private cache = new Map<string, WAMessage[]>()
+   private maxCachedJids = 15
+   private writeTimeouts = new Map<string, NodeJS.Timeout>()
 
    constructor(dir: string = 'messages', max: number = 250) {
       this.client = null
       this.storeDir = path.join(process.cwd(), '.cache', dir)
       this.max = max
-      this.maxCachedJids = 50
+      this.database = 'json'
 
       if (!fs.existsSync(this.storeDir)) {
          fs.mkdirSync(this.storeDir, { recursive: true })
       }
-
-      this._messages = Object.create(null) as Record<string, WAMessage[]>
-      this.loadedJids = new Set<string>()
-      this.dirtyJids = new Set<string>()
-      this.isSaving = false
-
-      const self = this
-      this.messages = new Proxy(this._messages, {
-         get(target, prop, receiver) {
-            if (typeof prop === 'string' && !['prototype', 'constructor', 'toJSON'].includes(prop)) {
-               self.loadJidData(prop)
-               self.touchJid(prop)
-            }
-            return Reflect.get(target, prop, receiver)
-         },
-         set(target, prop, value, receiver) {
-            if (typeof prop === 'string' && !['prototype', 'constructor', 'toJSON'].includes(prop)) {
-               self.touchJid(prop)
-            }
-            return Reflect.set(target, prop, value, receiver)
-         },
-         deleteProperty(target, prop) {
-            if (typeof prop === 'string') {
-               self.loadedJids.delete(prop)
-            }
-            return Reflect.deleteProperty(target, prop)
-         }
-      }) as Record<string, WAMessage[]>
-
-      setInterval(() => this.checkAndSave(), 15000)
    }
 
    public config({ dir, max }: StoreConfig): this {
@@ -74,7 +42,7 @@ class MessageStore {
       client.loadMessage = this.loadMessage.bind(this)
       client.loadMessages = this.loadMessages.bind(this)
       client.addMessage = this.addMessage.bind(this)
-      client.messages = this.messages
+      client.getAllMessages = this.getAllMessages.bind(this)
 
       return client
    }
@@ -84,100 +52,140 @@ class MessageStore {
       return path.join(this.storeDir, `${safeJid}.json`)
    }
 
-   private loadJidData(jid: string): void {
-      if (this._messages[jid]) return
-
-      const filePath = this.getFilePath(jid)
-      if (!fs.existsSync(filePath)) {
-         this._messages[jid] = []
-         return
-      }
-
-      try {
-         const fileContent = fs.readFileSync(filePath, 'utf-8')
-         this._messages[jid] = JSON.parse(fileContent) as WAMessage[]
-      } catch (error) {
-         console.error(`[message-store-json] Failed to load JID ${jid} from JSON, creating backup:`, error)
-         const backupPath = `${filePath}.corrupt-${Date.now()}`
-         try { fs.renameSync(filePath, backupPath) } catch { }
-         this._messages[jid] = []
+   private touchJid(jid: string): void {
+      const data = this.cache.get(jid)
+      if (data) {
+         this.cache.delete(jid)
+         this.cache.set(jid, data)
       }
    }
 
-   private touchJid(jid: string): void {
-      this.loadedJids.delete(jid)
-      this.loadedJids.add(jid)
+   private evictOldestCache(): void {
+      if (this.cache.size > this.maxCachedJids) {
+         for (const [key] of this.cache) {
+            if (this.writeTimeouts.has(key)) continue
 
-      if (this.loadedJids.size > this.maxCachedJids) {
-         for (const oldJid of this.loadedJids) {
-            if (this.dirtyJids.has(oldJid)) continue
-
-            delete this._messages[oldJid]
-            this.loadedJids.delete(oldJid)
-            break
+            this.cache.delete(key)
+            if (this.cache.size <= this.maxCachedJids) break
          }
       }
    }
 
-   private async checkAndSave(): Promise<void> {
-      if (this.isSaving || this.dirtyJids.size === 0) return
+   private readJidData(jid: string): WAMessage[] {
+      if (this.cache.has(jid)) {
+         this.touchJid(jid)
+         return this.cache.get(jid)!
+      }
 
-      this.isSaving = true
-      const jidsToSave = Array.from(this.dirtyJids)
-      this.dirtyJids.clear()
+      const filePath = this.getFilePath(jid)
+      if (!fs.existsSync(filePath)) {
+         return []
+      }
 
       try {
-         const savePromises = jidsToSave.map(async (jid) => {
-            const data = this._messages[jid]
-            if (!data) return
+         const fileContent = fs.readFileSync(filePath, 'utf-8')
+         const data = JSON.parse(fileContent) as WAMessage[]
 
-            const filePath = this.getFilePath(jid)
-            const tempFilePath = `${filePath}.tmp`
-            const jsonStr = JSON.stringify(data)
+         this.cache.set(jid, data)
+         this.evictOldestCache()
 
-            await fs.promises.writeFile(tempFilePath, jsonStr, 'utf-8')
-            await fs.promises.rename(tempFilePath, filePath)
-         })
-
-         await Promise.all(savePromises)
+         return data
       } catch (error) {
-         console.error('[message-store-json] Error saving messages:', error)
-      } finally {
-         this.isSaving = false
+         console.error(`[message-store-json] Failed to load JID ${jid} from JSON:`, error)
+         return []
       }
    }
 
-   public loadMessage(jid: string, id: string): WAMessage | null {
-      this.loadJidData(jid)
+   private writeJidData(jid: string, data: WAMessage[]): void {
+      this.cache.set(jid, data)
       this.touchJid(jid)
-      return this._messages[jid]?.find(v => v.key?.id === id || v.id === id) || null
+      this.evictOldestCache()
+
+      if (this.writeTimeouts.has(jid)) {
+         clearTimeout(this.writeTimeouts.get(jid)!)
+      }
+
+      const timeout = setTimeout(async () => {
+         this.writeTimeouts.delete(jid)
+         const filePath = this.getFilePath(jid)
+         const tempFilePath = `${filePath}.tmp`
+         try {
+            const jsonStr = JSON.stringify(data)
+            await fs.promises.writeFile(tempFilePath, jsonStr, 'utf-8')
+            await fs.promises.rename(tempFilePath, filePath)
+         } catch (error) {
+            console.error(`[message-store-json] Failed to write JID ${jid} to JSON:`, error)
+         }
+      }, 1000)
+
+      this.writeTimeouts.set(jid, timeout)
+   }
+
+   public loadMessage(jid: string, id: string): WAMessage | null {
+      const list = this.readJidData(jid)
+      return list.find(v => v.key?.id === id || (v as any).id === id) || null
    }
 
    public loadMessages(jid: string, count?: number): WAMessage[] | null {
-      this.loadJidData(jid)
-      this.touchJid(jid)
-      const list = this._messages[jid]
-      if (!list || list.length === 0) return null
+      const list = this.readJidData(jid)
+      if (list.length === 0) return null
 
       const slice = count ? list.slice(-count) : list
       return [...slice].reverse()
    }
 
    public addMessage(jid: string, msg: WAMessage): void {
-      this.loadJidData(jid)
+      const list = this.readJidData(jid)
+      list.push(msg)
 
-      this._messages[jid].push(msg)
-
-      if (this._messages[jid].length > this.max) {
-         this._messages[jid].splice(0, this._messages[jid].length - this.max)
+      if (list.length > this.max) {
+         list.splice(0, list.length - this.max)
       }
 
-      this.dirtyJids.add(jid)
-      this.touchJid(jid)
+      this.writeJidData(jid, list)
+   }
+
+   public getAllMessages(jid: string, offset: number = 0): WAMessage[] & { count(): number; clear(): void } {
+      const list = this.readJidData(jid)
+      const sliced = (offset > 0 ? list.slice(offset) : list) as WAMessage[] & { count(): number; clear(): void }
+
+      const self = this
+
+      sliced.count = () => {
+         const currentList = self.readJidData(jid)
+         return Math.max(0, currentList.length - offset)
+      }
+
+      sliced.clear = () => {
+         if (self.writeTimeouts.has(jid)) {
+            clearTimeout(self.writeTimeouts.get(jid)!)
+            self.writeTimeouts.delete(jid)
+         }
+
+         self.cache.delete(jid)
+
+         if (offset === 0) {
+            const filePath = self.getFilePath(jid)
+            if (fs.existsSync(filePath)) {
+               try {
+                  fs.unlinkSync(filePath)
+               } catch (error) {
+                  console.error(`[message-store-json] Failed to delete JSON file for JID ${jid}:`, error)
+               }
+            }
+         } else {
+            const currentList = self.readJidData(jid)
+            if (offset < currentList.length) {
+               const updated = currentList.slice(0, offset)
+               self.writeJidData(jid, updated)
+            }
+         }
+      }
+
+      return sliced
    }
 }
 
 const store = new MessageStore('messages')
 
-export const messages = store.messages
 export default store

@@ -17,5 +17,4 @@ const store = process.env?.USE_STORE?.includes('mysql')
                     ? sqliteStore
                     : jsonStore
 
-export const messages = store.messages
 export default store
