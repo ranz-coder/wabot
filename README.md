@@ -1,21 +1,22 @@
-# @neoxr/message-store
+# @neoxr/store
 
-> A lightweight message storage utility for WhatsApp bots built with Baileys. It maintains a RAM cache for immediate retrieval while persisting message history to a backend of your choice.
+> A lightweight data storage and state management utility for WhatsApp bots built with Baileys. It maintains a resource-optimized memory footprint for transient data while persisting message history and chat sessions to a backend of your choice.
 
 ### ⌗ FEATURES
 
-- **Multi-Backend Support**: Use standard JSON files by default, or opt-in to SQLite, Redis, MySQL, MongoDB or PostgreSQL.
-- **Lazy Loading**: Messages are loaded from storage only when accessed, optimizing memory usage.
-- **Optional Dependencies**: Heavy database drivers (better-sqlite3, redis, mysql2, pg, mongodb) are dynamically imported. Your project compiles successfully even if these databases are not installed.
+- **Comprehensive Data Management**: Manages messages, chats, contacts, stories, presences, connection state, and message IDs.
+- **Multi-Backend Support**: Use standard JSON files by default, or opt-in to SQLite, Redis, MySQL, MongoDB, or PostgreSQL.
+- **Lazy Loading & Proxy Architecture**: Chats and messages are loaded from storage only when accessed, keeping RAM usage strictly bounded.
+- **Optional Dependencies**: Heavy database drivers (`better-sqlite3`, `redis`, `mysql2`, `pg`, `mongodb`) are dynamically imported.
 - **Anti-Corruption Safeguards**: Uses Atomic Writes (temp files) for JSON, WAL mode for SQLite, and transaction/connection pools for relational databases.
-Easy Integration: Hooks directly into the Baileys client instance with a single bind() call.
+- **Easy Integration**: Hooks directly into the Baileys client instance with a single `bind()` call.
 
 ### ⌗ INSTALLATION
 
 Install the core package:
 
 ```bash
-yarn add @neoxr/message-store@github:neoxr/neoxr-bot#utils/message-store
+yarn add @neoxr/store@github:neoxr/neoxr-bot#utils/store
 ```
 
 Depending on the storage engine you plan to use, install the corresponding optional peer dependency:
@@ -39,23 +40,31 @@ yarn add pg
 
 ### ⌗ CONFIGURATION
 
-Import the specific storage engine you want to use. You can configure the cache limit (max) and directory/database settings dynamically via config().
+Import the specific storage engine you want to use. You can configure the storage settings dynamically via `config()`.
 
-```Typescript
+```typescript
 export interface StoreConfig {
-   /* Directory name inside '.cache' where file-based storage (JSON/SQLite) is kept */
    dir?: string
-   /* Maximum number of messages to persist and cache in RAM per JID */
    max?: number
-   /* Connection URI/string for network-based databases (Redis, MySQL, PostgreSQL) */
    uri?: string
 }
 ```
 
-Here is an example using JSON
+Example using JSON:
 
-```Javascript
-import store from '@neoxr/message-store/lib/message-store-json.js'
+```javascript
+import store from '@neoxr/store/lib/store-json.js'
+
+store.config({
+   dir: 'messages',
+   max: 300
+})
+```
+
+Example using SQLite:
+
+```javascript
+import store from '@neoxr/store/lib/store-sqlite.js'
 
 store.config({
    dir: 'messages',
@@ -65,8 +74,8 @@ store.config({
 
 Or if you're using a cloud database like MongoDB, use the URI:
 
-```Javascript
-import store from '@neoxr/message-store/lib/message-store-mongo.js'
+```javascript
+import store from '@neoxr/store/lib/store-mongo.js'
 
 store.config({
    max: 300,
@@ -78,21 +87,15 @@ store.config({
 
 Integrating the store into your Baileys connection:
 
-```Javascript
+```javascript
 import { makeWASocket } from '@whiskeysockets/baileys'
-import store from '@neoxr/message-store/lib/message-store-json.js'
-
-store.config({
-   dir: 'messages',
-   max: 300
-})
+import store from '@neoxr/store/lib/store-sqlite.js'
 
 async function connectToWA() {
    const client = makeWASocket({
       // Your Baileys configuration
    })
 
-   // Bind store methods directly to the client instance
    store.bind(client)
 
    client.ev.on('messages.upsert', async ({ messages, type }) => {
@@ -102,15 +105,19 @@ async function connectToWA() {
          const jid = msg.key.remoteJid
          if (!jid) continue
 
-         // Save incoming message
          client.addMessage(jid, msg)
 
-         // Retrieve the single message
          const singleMsg = client.loadMessage(jid, msg.key.id)
-
-         // Retrieve latest 10 messages from this chat
          const history = client.loadMessages(jid, 10)
       }
+   })
+
+   client.ev.on('chats.update', (updates) => {
+      client.chatUpdate(updates)
+   })
+
+   client.ev.on('contacts.upsert', (newContacts) => {
+      client.contactsUpsert(newContacts)
    })
 }
 
@@ -119,16 +126,87 @@ connectToWA()
 
 ### ⌗ API REFERENCE
 
-Once the store is bound to your `client` instance, the following methods become available:
+Once the store is bound to your `client` instance, the following properties and methods become available:
+
+---
+
+#### 📁 PERSISTENT GETTERS (0 RAM / Proxy-driven)
+
+#### `client.chats`
+Exposes direct access to chat sessions: `Record<string, any>`. Reads and writes directly to persistent database storage (SQLite/MySQL/Postgres/Mongo) or files (JSON) with atomic operations.
+
+---
+
+#### 🧠 MEMORY-BASED PROPERTIES (RAM Cache)
+
+- `client.contacts`: `Record<string, Contact>`
+- `client.stories`: `Record<string, any[]>`
+- `client.presences`: `Record<string, { [participant: string]: PresenceData }>`
+- `client.state`: `ConnectionState`
+- `client.messageId`: `Map<string, Map<string, { at: number }>>`
+
+---
+
+#### 💬 MESSAGE METHODS
 
 #### `client.addMessage(jid: string, msg: WAMessage): void`
-Saves a message to the RAM cache and pushes it to the persistent storage. Truncates older history once it exceeds the `max` configuration limit.
+Saves a message to persistent storage. Truncates older history once it exceeds the `max` configuration limit.
 
 #### `client.loadMessage(jid: string, id: string): WAMessage | null`
 Retrieves a specific message by its ID within a given chat JID.
 
 #### `client.loadMessages(jid: string, count?: number): WAMessage[] | null`
-Loads the latest `$count` messages from a specific JID. Returns the array in reverse order (newest message first).
+Loads the latest `$count` messages from a specific JID in reverse order (newest message first).
 
-#### `client.messages`
-Exposes direct, read-only access to the internal RAM-cached message object: `Record<string, WAMessage[]>`.
+#### `client.getAllMessages(jid: string, offset?: number): WAMessage[] & { count(): number; clear(): void }`
+Loads all messages starting from the given offset. Supports chainable methods:
+* `.count()`: Returns the total count of messages for this JID minus the offset.
+* `.clear()`: Clears the messages from persistent storage.
+
+#### `client.updateMessageWithReceipt(msg: any, receipt: any): void`
+Updates message receipt data (delivery/read status) in memory and automatically persists the updated message back to the database.
+
+#### `client.updateMessageWithReaction(msg: any, reaction: any): void`
+Updates reactions on a message and automatically persists the changes to the database.
+
+---
+
+#### 📇 CHAT & CONTACT METHODS
+
+#### `client.chatUpdate(updates: any[]): void`
+Saves and updates chat session data directly inside the persistent database storage.
+
+#### `client.contactsUpsert(newContacts: Contact[]): Set<string>`
+Inserts or merges new contacts into the RAM cache. Returns a Set containing old contact IDs.
+
+#### `client.contactUpdate(updates: any[]): void`
+Updates existing contact records in memory.
+
+#### `client.getContact(id: string): Contact | null`
+Retrieves a specific contact, matching by key JID, phone number, or internal ID.
+
+#### `client.getAllContacts(offset?: number): Contact[] & { count(): number; clear(): void }`
+Retrieves all contacts. Supports `.count()` and `.clear()`.
+
+---
+
+#### 📱 STORY METHODS
+
+#### `client.addStory(jid: string, story: any): void`
+Saves a story under the specific JID in RAM. Truncates older history once it exceeds 50 stories.
+
+#### `client.loadStory(jid: string, id: string): any | null`
+Retrieves a specific story by its ID under a given JID.
+
+#### `client.loadStories(jid: string, count?: number): any[] | null`
+Loads latest stories under a given JID.
+
+#### `client.getAllStories(jid: string, offset?: number): any[] & { count(): number; clear(): void }`
+Retrieves all stories under a given JID. Supports `.count()` and `.clear()`.
+
+---
+
+#### 🛡️ TRACKING & SECURITY
+
+#### `client.recordMessageId(sock: sock, msg: any): boolean`
+Logs message IDs to prevent double-processing or replay attacks. Automatically sweeps logs older than 15 minutes. Returns `false` if the message ID was already processed.

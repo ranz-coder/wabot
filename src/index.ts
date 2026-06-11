@@ -1,9 +1,9 @@
-import jsonStore from './core/message-store-json.js'
-import mysqlStore from './core/message-store-mysql.js'
-import mongoStore from './core/message-store-mongo.js'
-import pgsqlStore from './core/message-store-pgsql.js'
-import redisStore from './core/message-store-redis.js'
-import sqliteStore from './core/message-store-sqlite.js'
+import jsonStore from './core/store-json.js'
+import mysqlStore from './core/store-mysql.js'
+import mongoStore from './core/store-mongo.js'
+import pgsqlStore from './core/store-pgsql.js'
+import redisStore from './core/store-redis.js'
+import sqliteStore from './core/store-sqlite.js'
 
 const store = process.env?.USE_STORE?.includes('mysql')
     ? mysqlStore
