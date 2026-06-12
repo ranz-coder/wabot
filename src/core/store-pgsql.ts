@@ -32,8 +32,13 @@ class Store {
    public state: ConnectionState = { connection: 'close' }
    public messageId: Map<string, Map<string, { at: number }>> = new Map()
 
+   private cache = new Map<string, WAMessage[]>()
+   private maxCachedJids = 15
+   private writeQueues = new Map<string, Promise<any>>()
+
    private chatsCache = new Map<string, any>()
    private isChatsPreloaded = false
+   private chatsProxyInstance: Record<string, any>
 
    constructor(dir: string = 'stores', max: number = 250, uri?: string) {
       this.client = null
@@ -42,11 +47,13 @@ class Store {
       this.uri = uri || process.env.USE_STORE
       this.database = 'pgsql'
 
+      this.fallbackStore = Object.create(null)
+      this.fallbackChats = Object.create(null)
+
+      this.chatsProxyInstance = this.createChatsProxy()
+
       if (process.env?.USE_STORE?.includes('pg')) {
          this.initDB()
-      } else {
-         this.fallbackStore = Object.create(null)
-         this.fallbackChats = Object.create(null)
       }
 
       setInterval(() => this.cleanupExpiredMessages(), 120000)
@@ -56,16 +63,12 @@ class Store {
       const Pool = await loadPG()
 
       if (!Pool) {
-         console.warn('[message-store-pg] pg module not installed! Running in RAM-only mode.')
-         this.fallbackStore = Object.create(null)
-         this.fallbackChats = Object.create(null)
+         console.warn('[store-pg] pg module not installed! Running in RAM-only mode.')
          return
       }
 
       if (!this.uri) {
-         console.warn('[message-store-pg] PostgreSQL URI not provided! Running in RAM-only mode.')
-         this.fallbackStore = Object.create(null)
-         this.fallbackChats = Object.create(null)
+         console.warn('[store-pg] PostgreSQL URI not provided! Running in RAM-only mode.')
          return
       }
 
@@ -86,6 +89,7 @@ class Store {
                created_at BIGINT NOT NULL,
                PRIMARY KEY (jid, id)
             );
+            CREATE INDEX IF NOT EXISTS idx_messages_jid_created_at ON messages (jid, created_at DESC);
             CREATE TABLE IF NOT EXISTS chats (
                id VARCHAR(255) NOT NULL,
                data TEXT NOT NULL,
@@ -95,10 +99,8 @@ class Store {
 
          await this.preloadChats()
       } catch (error) {
-         console.error('[message-store-pg] Failed to initialize PostgreSQL. Falling back to RAM-only mode:', error)
+         console.error('[store-pg] Failed to initialize PostgreSQL. Falling back to RAM-only mode:', error)
          this.pool = null
-         this.fallbackStore = Object.create(null)
-         this.fallbackChats = Object.create(null)
       }
    }
 
@@ -111,7 +113,7 @@ class Store {
          }
          this.isChatsPreloaded = true
       } catch (error) {
-         console.error('[message-store-pg] Failed to preload chats:', error)
+         console.error('[store-pg] Failed to preload chats:', error)
       }
    }
 
@@ -138,7 +140,7 @@ class Store {
       return this
    }
 
-   public get chats(): Record<string, any> {
+   private createChatsProxy(): Record<string, any> {
       const self = this
       return new Proxy(Object.create(null), {
          get: (target, prop) => {
@@ -149,7 +151,7 @@ class Store {
             if (typeof prop !== 'string') return false
             self.chatsCache.set(prop, value)
             if (self.pool) {
-               self.pool.query('INSERT INTO chats (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data', [prop, JSON.stringify(value)]).catch(() => {})
+               self.pool.query('INSERT INTO chats (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data', [prop, JSON.stringify(value)]).catch(() => { })
             } else if (self.fallbackChats) {
                self.fallbackChats[prop] = value
             }
@@ -160,6 +162,10 @@ class Store {
          },
          getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true })
       }) as Record<string, any>
+   }
+
+   public get chats(): Record<string, any> {
+      return this.chatsProxyInstance
    }
 
    public bind<T extends BotClient>(client: T): T {
@@ -193,76 +199,92 @@ class Store {
       return client
    }
 
-   public async loadMessage(jid: string, id: string): Promise<WAMessage | null> {
-      if (this.pool) {
-         try {
-            const { rows }: any = await this.pool.query(
-               'SELECT data FROM messages WHERE jid = $1 AND id = $2',
-               [jid, id]
-            )
-            return rows.length > 0 ? (JSON.parse(rows[0].data) as WAMessage) : null
-         } catch (error) {
-            console.error(`[message-store-pg] Failed to load message ${id} for JID ${jid}:`, error)
-            return null
+   private touchJid(jid: string): void {
+      const data = this.cache.get(jid)
+      if (data) {
+         this.cache.delete(jid)
+         this.cache.set(jid, data)
+      }
+   }
+
+   private evictOldestCache(): void {
+      if (this.cache.size > this.maxCachedJids) {
+         for (const [key] of this.cache) {
+            if (this.writeQueues.has(key)) continue
+
+            this.cache.delete(key)
+            if (this.cache.size <= this.maxCachedJids) break
          }
       }
+   }
 
-      if (this.fallbackStore) {
-         const list = this.fallbackStore[jid] || []
-         return list.find(v => v.key?.id === id || (v as any).id === id) || null
+   private async getPGData(jid: string): Promise<WAMessage[]> {
+      if (this.cache.has(jid)) {
+         this.touchJid(jid)
+         return this.cache.get(jid)!
       }
 
-      return null
+      if (!this.pool) return []
+      try {
+         const { rows }: any = await this.pool.query(
+            'SELECT data FROM messages WHERE jid = $1 ORDER BY created_at ASC',
+            [jid]
+         )
+         const data = rows.map((row: any) => JSON.parse(row.data) as WAMessage)
+         this.cache.set(jid, data)
+         this.evictOldestCache()
+         return data
+      } catch (error) {
+         console.error(`[store-pg] Failed to load messages for JID ${jid}:`, error)
+         return []
+      }
+   }
+
+   public async loadMessage(jid: string, id: string): Promise<WAMessage | null> {
+      const list = await this.getPGData(jid)
+      return list.find(v => v.key?.id === id || (v as any).id === id) || null
    }
 
    public async loadMessages(jid: string, count?: number): Promise<WAMessage[] | null> {
-      if (this.pool) {
-         try {
-            let query = 'SELECT data FROM messages WHERE jid = $1 ORDER BY created_at DESC'
-            const params: any[] = [jid]
+      const list = await this.getPGData(jid)
+      if (list.length === 0) return null
 
-            if (count !== undefined && count > 0) {
-               query += ' LIMIT $2'
-               params.push(count)
-            }
-
-            const { rows }: any = await this.pool.query(query, params)
-            if (rows.length === 0) return null
-
-            return rows.map((row: any) => JSON.parse(row.data) as WAMessage)
-         } catch (error) {
-            console.error(`[message-store-pg] Failed to load messages for JID ${jid}:`, error)
-            return null
-         }
-      }
-
-      if (this.fallbackStore) {
-         const list = this.fallbackStore[jid]
-         if (!list || list.length === 0) return null
-
-         const slice = count ? list.slice(-count) : list
-         return [...slice].reverse()
-      }
-
-      return null
+      const slice = count ? list.slice(-count) : list
+      return [...slice].reverse()
    }
 
    public async addMessage(jid: string, msg: WAMessage): Promise<void> {
-      const msgId = msg.key?.id || (msg as any).id
+      const list = await this.getPGData(jid)
+      list.push(msg)
 
+      if (list.length > this.max) {
+         list.splice(0, list.length - this.max)
+      }
+
+      const msgId = msg.key?.id || (msg as any).id
       if (this.pool && msgId) {
-         try {
-            await this.pool.query(
-               'INSERT INTO messages (jid, id, data, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (jid, id) DO UPDATE SET data = EXCLUDED.data, created_at = EXCLUDED.created_at',
-               [jid, msgId, JSON.stringify(msg), Date.now()]
-            )
-            await this.pool.query(
-               'DELETE FROM messages WHERE jid = $1 AND id NOT IN (SELECT id FROM messages WHERE jid = $2 ORDER BY created_at DESC LIMIT $3)',
-               [jid, jid, this.max]
-            )
-         } catch (error) {
-            console.error('[message-store-pg] Failed to save message to PG:', error)
-         }
+         const previous = this.writeQueues.get(jid) || Promise.resolve()
+         const current = previous
+            .then(async () => {
+               try {
+                  await this.pool.query(
+                     'INSERT INTO messages (jid, id, data, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (jid, id) DO UPDATE SET data = EXCLUDED.data, created_at = EXCLUDED.created_at',
+                     [jid, msgId, JSON.stringify(msg), Date.now()]
+                  )
+                  await this.pool.query(
+                     'DELETE FROM messages WHERE jid = $1 AND id NOT IN (SELECT id FROM messages WHERE jid = $2 ORDER BY created_at DESC LIMIT $3)',
+                     [jid, jid, this.max]
+                  )
+               } catch (error) {
+                  console.error('[store-pg] Failed to save message to PG:', error)
+               }
+            })
+            .finally(() => {
+               if (this.writeQueues.get(jid) === current) {
+                  this.writeQueues.delete(jid)
+               }
+            })
+         this.writeQueues.set(jid, current)
          return
       }
 
@@ -285,35 +307,17 @@ class Store {
          let list: WAMessage[] = []
 
          if (self.pool) {
-            try {
-               const { rows }: any = await self.pool.query(
-                  'SELECT data FROM messages WHERE jid = $1 ORDER BY created_at ASC OFFSET $2',
-                  [jid, offset]
-               )
-               list = rows.map((row: any) => JSON.parse(row.data) as WAMessage)
-            } catch (error) {
-               console.error(`[message-store-pg] Failed to get messages for JID ${jid}:`, error)
-            }
+            list = await self.getPGData(jid)
          } else if (self.fallbackStore) {
-            const rawList = self.fallbackStore[jid] || []
-            list = offset > 0 ? rawList.slice(offset) : rawList
+            list = self.fallbackStore[jid] || []
          }
 
-         const sliced = list as WAMessage[] & { count(): Promise<number>; clear(): Promise<void> }
+         const sliced = (offset > 0 ? list.slice(offset) : list) as WAMessage[] & { count(): Promise<number>; clear(): Promise<void> }
 
          sliced.count = async () => {
             if (self.pool) {
-               try {
-                  const { rows }: any = await self.pool.query(
-                     'SELECT COUNT(*) as count FROM messages WHERE jid = $1',
-                     [jid]
-                  )
-                  const total = parseInt(rows[0]?.count || '0', 10)
-                  return Math.max(0, total - offset)
-               } catch (error) {
-                  console.error(`[message-store-pg] Failed to count messages for JID ${jid}:`, error)
-                  return 0
-               }
+               const currentList = await self.getPGData(jid)
+               return Math.max(0, currentList.length - offset)
             }
             if (self.fallbackStore) {
                const total = (self.fallbackStore[jid] || []).length
@@ -323,19 +327,31 @@ class Store {
          }
 
          sliced.clear = async () => {
+            self.cache.delete(jid)
+
             if (self.pool) {
-               try {
-                  if (offset === 0) {
-                     await self.pool.query('DELETE FROM messages WHERE jid = $1', [jid])
-                  } else {
-                     await self.pool.query(
-                        'DELETE FROM messages WHERE jid = $1 AND id NOT IN (SELECT id FROM messages WHERE jid = $2 ORDER BY created_at ASC LIMIT $3)',
-                        [jid, jid, offset]
-                     )
-                  }
-               } catch (error) {
-                  console.error(`[message-store-pg] Failed to clear messages for JID ${jid}:`, error)
-               }
+               const previous = self.writeQueues.get(jid) || Promise.resolve()
+               const current = previous
+                  .then(async () => {
+                     try {
+                        if (offset === 0) {
+                           await self.pool.query('DELETE FROM messages WHERE jid = $1', [jid])
+                        } else {
+                           await self.pool.query(
+                              'DELETE FROM messages WHERE jid = $1 AND id NOT IN (SELECT id FROM messages WHERE jid = $2 ORDER BY created_at ASC LIMIT $3)',
+                              [jid, jid, offset]
+                           )
+                        }
+                     } catch (error) {
+                        console.error(`[store-pg] Failed to clear messages for JID ${jid}:`, error)
+                     }
+                  })
+                  .finally(() => {
+                     if (self.writeQueues.get(jid) === current) {
+                        self.writeQueues.delete(jid)
+                     }
+                  })
+               self.writeQueues.set(jid, current)
                return
             }
 
@@ -358,17 +374,8 @@ class Store {
 
       promiseWithMethods.count = async () => {
          if (self.pool) {
-            try {
-               const { rows }: any = await self.pool.query(
-                  'SELECT COUNT(*) as count FROM messages WHERE jid = $1',
-                  [jid]
-               )
-               const total = parseInt(rows[0]?.count || '0', 10)
-               return Math.max(0, total - offset)
-            } catch (error) {
-               console.error(`[message-store-pg] Failed to count messages for JID ${jid}:`, error)
-               return 0
-            }
+            const currentList = await self.getPGData(jid)
+            return Math.max(0, currentList.length - offset)
          }
          if (self.fallbackStore) {
             const total = (self.fallbackStore[jid] || []).length
@@ -378,19 +385,31 @@ class Store {
       }
 
       promiseWithMethods.clear = async () => {
+         self.cache.delete(jid)
+
          if (self.pool) {
-            try {
-               if (offset === 0) {
-                  await self.pool.query('DELETE FROM messages WHERE jid = $1', [jid])
-               } else {
-                  await self.pool.query(
-                     'DELETE FROM messages WHERE jid = $1 AND id NOT IN (SELECT id FROM messages WHERE jid = $2 ORDER BY created_at ASC LIMIT $3)',
-                     [jid, jid, offset]
-                  )
-               }
-            } catch (error) {
-               console.error(`[message-store-pg] Failed to clear messages for JID ${jid}:`, error)
-            }
+            const previous = self.writeQueues.get(jid) || Promise.resolve()
+            const current = previous
+               .then(async () => {
+                  try {
+                     if (offset === 0) {
+                        await self.pool.query('DELETE FROM messages WHERE jid = $1', [jid])
+                     } else {
+                        await self.pool.query(
+                           'DELETE FROM messages WHERE jid = $1 AND id NOT IN (SELECT id FROM messages WHERE jid = $2 ORDER BY created_at ASC LIMIT $3)',
+                           [jid, jid, offset]
+                        )
+                     }
+                  } catch (error) {
+                     console.error(`[store-pg] Failed to clear messages for JID ${jid}:`, error)
+                  }
+               })
+               .finally(() => {
+                  if (self.writeQueues.get(jid) === current) {
+                     self.writeQueues.delete(jid)
+                  }
+               })
+            self.writeQueues.set(jid, current)
             return
          }
 
@@ -490,14 +509,32 @@ class Store {
 
       const jid = msg.key?.remoteJid
       const id = msg.key?.id || msg.id
-      if (this.pool && jid && id) {
-         try {
-            await this.pool.query(
-               'INSERT INTO messages (jid, id, data, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (jid, id) DO UPDATE SET data = EXCLUDED.data, created_at = EXCLUDED.created_at',
-               [jid, id, JSON.stringify(msg), Date.now()]
-            )
-         } catch (error) {
-            console.error('[message-store-pg] Failed to update receipt in PG:', error)
+      if (jid && id) {
+         const list = await this.getPGData(jid)
+         const idx = list.findIndex(v => v.key?.id === id || (v as any).id === id)
+         if (idx !== -1) {
+            list[idx] = msg
+         }
+
+         if (this.pool) {
+            const previous = this.writeQueues.get(jid) || Promise.resolve()
+            const current = previous
+               .then(async () => {
+                  try {
+                     await this.pool.query(
+                        'INSERT INTO messages (jid, id, data, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (jid, id) DO UPDATE SET data = EXCLUDED.data, created_at = EXCLUDED.created_at',
+                        [jid, id, JSON.stringify(msg), Date.now()]
+                     )
+                  } catch (error) {
+                     console.error('[store-pg] Failed to update receipt in PG:', error)
+                  }
+               })
+               .finally(() => {
+                  if (this.writeQueues.get(jid) === current) {
+                     this.writeQueues.delete(jid)
+                  }
+               })
+            this.writeQueues.set(jid, current)
          }
       }
    }
@@ -510,14 +547,32 @@ class Store {
 
       const jid = msg.key?.remoteJid
       const id = msg.key?.id || msg.id
-      if (this.pool && jid && id) {
-         try {
-            await this.pool.query(
-               'INSERT INTO messages (jid, id, data, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (jid, id) DO UPDATE SET data = EXCLUDED.data, created_at = EXCLUDED.created_at',
-               [jid, id, JSON.stringify(msg), Date.now()]
-            )
-         } catch (error) {
-            console.error('[message-store-pg] Failed to update reaction in PG:', error)
+      if (jid && id) {
+         const list = await this.getPGData(jid)
+         const idx = list.findIndex(v => v.key?.id === id || (v as any).id === id)
+         if (idx !== -1) {
+            list[idx] = msg
+         }
+
+         if (this.pool) {
+            const previous = this.writeQueues.get(jid) || Promise.resolve()
+            const current = previous
+               .then(async () => {
+                  try {
+                     await this.pool.query(
+                        'INSERT INTO messages (jid, id, data, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (jid, id) DO UPDATE SET data = EXCLUDED.data, created_at = EXCLUDED.created_at',
+                        [jid, id, JSON.stringify(msg), Date.now()]
+                     )
+                  } catch (error) {
+                     console.error('[store-pg] Failed to update reaction in PG:', error)
+                  }
+               })
+               .finally(() => {
+                  if (this.writeQueues.get(jid) === current) {
+                     this.writeQueues.delete(jid)
+                  }
+               })
+            this.writeQueues.set(jid, current)
          }
       }
    }
@@ -611,14 +666,6 @@ class Store {
          })
          if (instanceMap.size === 0) this.messageId.delete(instance)
       })
-
-      if (this.fallbackStore) {
-         Object.values(this.fallbackStore).forEach((msgArray) => {
-            if (msgArray && msgArray.length > 100) {
-               msgArray.splice(0, msgArray.length - 100)
-            }
-         })
-      }
 
       Object.values(this.stories).forEach((storyArray) => {
          if (storyArray && storyArray.length > 30) {

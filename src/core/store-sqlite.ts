@@ -45,17 +45,21 @@ class Store {
    private insertChatStmt: any = null
    private getAllChatIdsStmt: any = null
 
+   private chatsProxyInstance: Record<string, any>
+
    constructor(dir: string = 'stores', max: number = 250) {
       this.client = null
       this.storeDir = path.join(process.cwd(), '.cache', dir)
       this.max = max
       this.database = 'sqlite'
 
+      this.fallbackStore = Object.create(null)
+      this.fallbackChats = Object.create(null)
+
+      this.chatsProxyInstance = this.createChatsProxy()
+
       if (process.env?.USE_STORE?.includes('sqlite')) {
          this.initDB()
-      } else {
-         this.fallbackStore = Object.create(null)
-         this.fallbackChats = Object.create(null)
       }
 
       setInterval(() => this.cleanupExpiredMessages(), 120000)
@@ -65,9 +69,7 @@ class Store {
       const SQLite = await loadSqlite()
 
       if (!SQLite) {
-         console.warn('[message-store-sqlite] better-sqlite3 module not installed! Running in RAM-only mode.')
-         this.fallbackStore = Object.create(null)
-         this.fallbackChats = Object.create(null)
+         console.warn('[store-sqlite] better-sqlite3 module not installed! Running in RAM-only mode.')
          return
       }
 
@@ -83,7 +85,11 @@ class Store {
 
       try {
          this.db = new SQLite(dbPath)
+
          this.db.pragma('journal_mode = WAL')
+         this.db.pragma('synchronous = NORMAL')
+         this.db.pragma('temp_store = MEMORY')
+         this.db.pragma('cache_size = 10000')
 
          this.db.exec(`
             CREATE TABLE IF NOT EXISTS messages (
@@ -93,6 +99,7 @@ class Store {
                created_at INTEGER,
                PRIMARY KEY (jid, id)
             );
+            CREATE INDEX IF NOT EXISTS idx_messages_jid_created_at ON messages (jid, created_at DESC);
             CREATE TABLE IF NOT EXISTS chats (
                id TEXT PRIMARY KEY,
                data TEXT
@@ -113,10 +120,8 @@ class Store {
          this.getAllChatIdsStmt = this.db.prepare('SELECT id FROM chats')
 
       } catch (error) {
-         console.error('[message-store-sqlite] Failed to initialize SQLite database. Falling back to RAM-only mode:', error)
+         console.error('[store-sqlite] Failed to initialize SQLite database. Falling back to RAM-only mode:', error)
          this.db = null
-         this.fallbackStore = Object.create(null)
-         this.fallbackChats = Object.create(null)
       }
    }
 
@@ -142,7 +147,7 @@ class Store {
       return this
    }
 
-   public get chats(): Record<string, any> {
+   private createChatsProxy(): Record<string, any> {
       const self = this
       return new Proxy(Object.create(null), {
          get: (target, prop) => {
@@ -182,6 +187,10 @@ class Store {
       }) as Record<string, any>
    }
 
+   public get chats(): Record<string, any> {
+      return this.chatsProxyInstance
+   }
+
    public bind<T extends BotClient>(client: T): T {
       this.client = client
 
@@ -219,7 +228,7 @@ class Store {
             const row = this.getOneStmt.get(jid, id) as { data: string } | undefined
             return row ? (JSON.parse(row.data) as WAMessage) : null
          } catch (error) {
-            console.error(`[message-store-sqlite] Failed to load message ${id} for JID ${jid}:`, error)
+            console.error(`[store-sqlite] Failed to load message ${id} for JID ${jid}:`, error)
             return null
          }
       }
@@ -251,7 +260,7 @@ class Store {
 
             return rows.map(row => JSON.parse(row.data) as WAMessage)
          } catch (error) {
-            console.error(`[message-store-sqlite] Failed to load messages for JID ${jid}:`, error)
+            console.error(`[store-sqlite] Failed to load messages for JID ${jid}:`, error)
             return null
          }
       }
@@ -275,7 +284,7 @@ class Store {
                this.insertStmt.run(jid, msgId, JSON.stringify(msg), Date.now())
                this.cleanupStmt.run(jid, jid, this.max)
             } catch (error) {
-               console.error('[message-store-sqlite] Failed to save message to SQLite:', error)
+               console.error('[store-sqlite] Failed to save message to SQLite:', error)
             }
          }
          return
@@ -305,7 +314,7 @@ class Store {
                   const total = result ? result.count : 0
                   return Math.max(0, total - offset)
                } catch (error) {
-                  console.error('[message-store-sqlite] Failed to count messages:', error)
+                  console.error('[store-sqlite] Failed to count messages:', error)
                   return 0
                }
             }
@@ -314,13 +323,13 @@ class Store {
                try {
                   this.deleteWithOffsetStmt.run(jid, jid, offset)
                } catch (error) {
-                  console.error(`[message-store-sqlite] Failed to clear messages for JID ${jid} with offset ${offset}:`, error)
+                  console.error(`[store-sqlite] Failed to clear messages for JID ${jid} with offset ${offset}:`, error)
                }
             }
 
             return messages
          } catch (error) {
-            console.error(`[message-store-sqlite] Failed to get all messages for JID ${jid}:`, error)
+            console.error(`[store-sqlite] Failed to get all messages for JID ${jid}:`, error)
          }
       }
 
@@ -440,7 +449,7 @@ class Store {
          try {
             this.insertStmt.run(jid, id, JSON.stringify(msg), Date.now())
          } catch (error) {
-            console.error('[message-store-sqlite] Failed to update receipt in SQLite:', error)
+            console.error('[store-sqlite] Failed to update receipt in SQLite:', error)
          }
       }
    }
@@ -457,7 +466,7 @@ class Store {
          try {
             this.insertStmt.run(jid, id, JSON.stringify(msg), Date.now())
          } catch (error) {
-            console.error('[message-store-sqlite] Failed to update reaction in SQLite:', error)
+            console.error('[store-sqlite] Failed to update reaction in SQLite:', error)
          }
       }
    }
@@ -536,12 +545,6 @@ class Store {
    }
 
    private cleanupExpiredMessages(): void {
-      if (this.db && this.deleteWithOffsetStmt) {
-         try {
-            // No statement ran here, placeholder retained for future message gc
-         } catch (e) { }
-      }
-
       if (this.fallbackStore) {
          Object.values(this.fallbackStore).forEach((msgArray) => {
             if (msgArray && msgArray.length > 100) {
@@ -557,14 +560,6 @@ class Store {
          })
          if (instanceMap.size === 0) this.messageId.delete(instance)
       })
-
-      if (this.fallbackStore) {
-         Object.values(this.fallbackStore).forEach((msgArray) => {
-            if (msgArray && msgArray.length > 100) {
-               msgArray.splice(0, msgArray.length - 100)
-            }
-         })
-      }
 
       Object.values(this.stories).forEach((storyArray) => {
          if (storyArray && storyArray.length > 30) {

@@ -32,8 +32,13 @@ class Store {
    public state: ConnectionState = { connection: 'close' }
    public messageId: Map<string, Map<string, { at: number }>> = new Map()
 
+   private cache = new Map<string, WAMessage[]>()
+   private maxCachedJids = 15
+   private writeQueues = new Map<string, Promise<any>>()
+
    private chatsCache = new Map<string, any>()
    private isChatsPreloaded = false
+   private chatsProxyInstance: Record<string, any>
 
    constructor(dir: string = 'stores', max: number = 250, uri?: string) {
       this.client = null
@@ -42,11 +47,13 @@ class Store {
       this.uri = uri || process.env.USE_STORE
       this.database = 'mysql'
 
+      this.fallbackStore = Object.create(null)
+      this.fallbackChats = Object.create(null)
+
+      this.chatsProxyInstance = this.createChatsProxy()
+
       if (process.env?.USE_STORE?.includes('mysql')) {
          this.initDB()
-      } else {
-         this.fallbackStore = Object.create(null)
-         this.fallbackChats = Object.create(null)
       }
 
       setInterval(() => this.cleanupExpiredMessages(), 120000)
@@ -56,16 +63,12 @@ class Store {
       const mysql = await loadMySQL()
 
       if (!mysql) {
-         console.warn('[message-store-mysql] mysql2 module not installed! Running in RAM-only mode.')
-         this.fallbackStore = Object.create(null)
-         this.fallbackChats = Object.create(null)
+         console.warn('[store-mysql] mysql2 module not installed! Running in RAM-only mode.')
          return
       }
 
       if (!this.uri) {
-         console.warn('[message-store-mysql] MySQL URI not provided! Running in RAM-only mode.')
-         this.fallbackStore = Object.create(null)
-         this.fallbackChats = Object.create(null)
+         console.warn('[store-mysql] MySQL URI not provided! Running in RAM-only mode.')
          return
       }
 
@@ -88,6 +91,12 @@ class Store {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
          `)
 
+         try {
+            await this.pool.query(`
+               ALTER TABLE messages ADD INDEX idx_messages_jid_created_at (jid, created_at DESC);
+            `)
+         } catch (e) { }
+
          await this.pool.query(`
             CREATE TABLE IF NOT EXISTS chats (
                id VARCHAR(255) NOT NULL,
@@ -98,10 +107,8 @@ class Store {
 
          await this.preloadChats()
       } catch (error) {
-         console.error('[message-store-mysql] Failed to initialize MySQL. Falling back to RAM-only mode:', error)
+         console.error('[store-mysql] Failed to initialize MySQL. Falling back to RAM-only mode:', error)
          this.pool = null
-         this.fallbackStore = Object.create(null)
-         this.fallbackChats = Object.create(null)
       }
    }
 
@@ -114,7 +121,7 @@ class Store {
          }
          this.isChatsPreloaded = true
       } catch (error) {
-         console.error('[message-store-mysql] Failed to preload chats:', error)
+         console.error('[store-mysql] Failed to preload chats:', error)
       }
    }
 
@@ -141,7 +148,7 @@ class Store {
       return this
    }
 
-   public get chats(): Record<string, any> {
+   private createChatsProxy(): Record<string, any> {
       const self = this
       return new Proxy(Object.create(null), {
          get: (target, prop) => {
@@ -152,7 +159,7 @@ class Store {
             if (typeof prop !== 'string') return false
             self.chatsCache.set(prop, value)
             if (self.pool) {
-               self.pool.query('INSERT INTO chats (id, data) VALUES (?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data)', [prop, JSON.stringify(value)]).catch(() => {})
+               self.pool.query('INSERT INTO chats (id, data) VALUES (?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data)', [prop, JSON.stringify(value)]).catch(() => { })
             } else if (self.fallbackChats) {
                self.fallbackChats[prop] = value
             }
@@ -163,6 +170,10 @@ class Store {
          },
          getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true })
       }) as Record<string, any>
+   }
+
+   public get chats(): Record<string, any> {
+      return this.chatsProxyInstance
    }
 
    public bind<T extends BotClient>(client: T): T {
@@ -196,76 +207,92 @@ class Store {
       return client
    }
 
-   public async loadMessage(jid: string, id: string): Promise<WAMessage | null> {
-      if (this.pool) {
-         try {
-            const [rows]: any = await this.pool.query(
-               'SELECT data FROM messages WHERE jid = ? AND id = ?',
-               [jid, id]
-            )
-            return rows.length > 0 ? (JSON.parse(rows[0].data) as WAMessage) : null
-         } catch (error) {
-            console.error(`[message-store-mysql] Failed to load message ${id} for JID ${jid}:`, error)
-            return null
+   private touchJid(jid: string): void {
+      const data = this.cache.get(jid)
+      if (data) {
+         this.cache.delete(jid)
+         this.cache.set(jid, data)
+      }
+   }
+
+   private evictOldestCache(): void {
+      if (this.cache.size > this.maxCachedJids) {
+         for (const [key] of this.cache) {
+            if (this.writeQueues.has(key)) continue
+
+            this.cache.delete(key)
+            if (this.cache.size <= this.maxCachedJids) break
          }
       }
+   }
 
-      if (this.fallbackStore) {
-         const list = this.fallbackStore[jid] || []
-         return list.find(v => v.key?.id === id || (v as any).id === id) || null
+   private async getMySQLData(jid: string): Promise<WAMessage[]> {
+      if (this.cache.has(jid)) {
+         this.touchJid(jid)
+         return this.cache.get(jid)!
       }
 
-      return null
+      if (!this.pool) return []
+      try {
+         const [rows]: any = await this.pool.query(
+            'SELECT data FROM messages WHERE jid = ? ORDER BY created_at ASC',
+            [jid]
+         )
+         const data = rows.map((row: any) => JSON.parse(row.data) as WAMessage)
+         this.cache.set(jid, data)
+         this.evictOldestCache()
+         return data
+      } catch (error) {
+         console.error(`[store-mysql] Failed to load messages for JID ${jid}:`, error)
+         return []
+      }
+   }
+
+   public async loadMessage(jid: string, id: string): Promise<WAMessage | null> {
+      const list = await this.getMySQLData(jid)
+      return list.find(v => v.key?.id === id || (v as any).id === id) || null
    }
 
    public async loadMessages(jid: string, count?: number): Promise<WAMessage[] | null> {
-      if (this.pool) {
-         try {
-            let query = 'SELECT data FROM messages WHERE jid = ? ORDER BY created_at DESC'
-            const params: any[] = [jid]
+      const list = await this.getMySQLData(jid)
+      if (list.length === 0) return null
 
-            if (count !== undefined && count > 0) {
-               query += ' LIMIT ?'
-               params.push(count)
-            }
-
-            const [rows]: any = await this.pool.query(query, params)
-            if (rows.length === 0) return null
-
-            return rows.map((row: any) => JSON.parse(row.data) as WAMessage)
-         } catch (error) {
-            console.error(`[message-store-mysql] Failed to load messages for JID ${jid}:`, error)
-            return null
-         }
-      }
-
-      if (this.fallbackStore) {
-         const list = this.fallbackStore[jid]
-         if (!list || list.length === 0) return null
-
-         const slice = count ? list.slice(-count) : list
-         return [...slice].reverse()
-      }
-
-      return null
+      const slice = count ? list.slice(-count) : list
+      return [...slice].reverse()
    }
 
    public async addMessage(jid: string, msg: WAMessage): Promise<void> {
-      const msgId = msg.key?.id || (msg as any).id
+      const list = await this.getMySQLData(jid)
+      list.push(msg)
 
+      if (list.length > this.max) {
+         list.splice(0, list.length - this.max)
+      }
+
+      const msgId = msg.key?.id || (msg as any).id
       if (this.pool && msgId) {
-         try {
-            await this.pool.query(
-               'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
-               [jid, msgId, JSON.stringify(msg), Date.now()]
-            )
-            await this.pool.query(
-               'DELETE FROM messages WHERE jid = ? AND id NOT IN (SELECT id FROM (SELECT id FROM messages WHERE jid = ? ORDER BY created_at DESC LIMIT ?) as tmp)',
-               [jid, jid, this.max]
-            )
-         } catch (error) {
-            console.error('[message-store-mysql] Failed to save message to MySQL:', error)
-         }
+         const previous = this.writeQueues.get(jid) || Promise.resolve()
+         const current = previous
+            .then(async () => {
+               try {
+                  await this.pool.query(
+                     'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
+                     [jid, msgId, JSON.stringify(msg), Date.now()]
+                  )
+                  await this.pool.query(
+                     'DELETE FROM messages WHERE jid = ? AND id NOT IN (SELECT id FROM (SELECT id FROM messages WHERE jid = ? ORDER BY created_at DESC LIMIT ?) as tmp)',
+                     [jid, jid, this.max]
+                  )
+               } catch (error) {
+                  console.error('[store-mysql] Failed to save message to MySQL:', error)
+               }
+            })
+            .finally(() => {
+               if (this.writeQueues.get(jid) === current) {
+                  this.writeQueues.delete(jid)
+               }
+            })
+         this.writeQueues.set(jid, current)
          return
       }
 
@@ -288,35 +315,17 @@ class Store {
          let list: WAMessage[] = []
 
          if (self.pool) {
-            try {
-               const [rows]: any = await self.pool.query(
-                  'SELECT data FROM messages WHERE jid = ? ORDER BY created_at ASC LIMIT 999999999 OFFSET ?',
-                  [jid, offset]
-               )
-               list = rows.map((row: any) => JSON.parse(row.data) as WAMessage)
-            } catch (error) {
-               console.error(`[message-store-mysql] Failed to get messages for JID ${jid}:`, error)
-            }
+            list = await self.getMySQLData(jid)
          } else if (self.fallbackStore) {
-            const rawList = self.fallbackStore[jid] || []
-            list = offset > 0 ? rawList.slice(offset) : rawList
+            list = self.fallbackStore[jid] || []
          }
 
-         const sliced = list as WAMessage[] & { count(): Promise<number>; clear(): Promise<void> }
+         const sliced = (offset > 0 ? list.slice(offset) : list) as WAMessage[] & { count(): Promise<number>; clear(): Promise<void> }
 
          sliced.count = async () => {
             if (self.pool) {
-               try {
-                  const [rows]: any = await self.pool.query(
-                     'SELECT COUNT(*) as count FROM messages WHERE jid = ?',
-                     [jid]
-                  )
-                  const total = rows[0]?.count || 0
-                  return Math.max(0, total - offset)
-               } catch (error) {
-                  console.error(`[message-store-mysql] Failed to count messages for JID ${jid}:`, error)
-                  return 0
-               }
+               const currentList = await self.getMySQLData(jid)
+               return Math.max(0, currentList.length - offset)
             }
             if (self.fallbackStore) {
                const total = (self.fallbackStore[jid] || []).length
@@ -326,19 +335,31 @@ class Store {
          }
 
          sliced.clear = async () => {
+            self.cache.delete(jid)
+
             if (self.pool) {
-               try {
-                  if (offset === 0) {
-                     await self.pool.query('DELETE FROM messages WHERE jid = ?', [jid])
-                  } else {
-                     await self.pool.query(
-                        'DELETE FROM messages WHERE jid = ? AND id NOT IN (SELECT id FROM (SELECT id FROM messages WHERE jid = ? ORDER BY created_at ASC LIMIT ?) as tmp)',
-                        [jid, jid, offset]
-                     )
-                  }
-               } catch (error) {
-                  console.error(`[message-store-mysql] Failed to clear messages for JID ${jid}:`, error)
-               }
+               const previous = self.writeQueues.get(jid) || Promise.resolve()
+               const current = previous
+                  .then(async () => {
+                     try {
+                        if (offset === 0) {
+                           await self.pool.query('DELETE FROM messages WHERE jid = ?', [jid])
+                        } else {
+                           await self.pool.query(
+                              'DELETE FROM messages WHERE jid = ? AND id NOT IN (SELECT id FROM (SELECT id FROM messages WHERE jid = ? ORDER BY created_at ASC LIMIT ?) as tmp)',
+                              [jid, jid, offset]
+                           )
+                        }
+                     } catch (error) {
+                        console.error(`[store-mysql] Failed to clear messages for JID ${jid}:`, error)
+                     }
+                  })
+                  .finally(() => {
+                     if (self.writeQueues.get(jid) === current) {
+                        self.writeQueues.delete(jid)
+                     }
+                  })
+               self.writeQueues.set(jid, current)
                return
             }
 
@@ -361,17 +382,8 @@ class Store {
 
       promiseWithMethods.count = async () => {
          if (self.pool) {
-            try {
-               const [rows]: any = await self.pool.query(
-                  'SELECT COUNT(*) as count FROM messages WHERE jid = ?',
-                  [jid]
-               )
-               const total = rows[0]?.count || 0
-               return Math.max(0, total - offset)
-            } catch (error) {
-               console.error(`[message-store-mysql] Failed to count messages for JID ${jid}:`, error)
-               return 0
-            }
+            const currentList = await self.getMySQLData(jid)
+            return Math.max(0, currentList.length - offset)
          }
          if (self.fallbackStore) {
             const total = (self.fallbackStore[jid] || []).length
@@ -381,19 +393,31 @@ class Store {
       }
 
       promiseWithMethods.clear = async () => {
+         self.cache.delete(jid)
+
          if (self.pool) {
-            try {
-               if (offset === 0) {
-                  await self.pool.query('DELETE FROM messages WHERE jid = ?', [jid])
-               } else {
-                  await self.pool.query(
-                     'DELETE FROM messages WHERE jid = ? AND id NOT IN (SELECT id FROM (SELECT id FROM messages WHERE jid = ? ORDER BY created_at ASC LIMIT ?) as tmp)',
-                     [jid, jid, offset]
-                  )
-               }
-            } catch (error) {
-               console.error(`[message-store-mysql] Failed to clear messages for JID ${jid}:`, error)
-            }
+            const previous = self.writeQueues.get(jid) || Promise.resolve()
+            const current = previous
+               .then(async () => {
+                  try {
+                     if (offset === 0) {
+                        await self.pool.query('DELETE FROM messages WHERE jid = ?', [jid])
+                     } else {
+                        await self.pool.query(
+                           'DELETE FROM messages WHERE jid = ? AND id NOT IN (SELECT id FROM (SELECT id FROM messages WHERE jid = ? ORDER BY created_at ASC LIMIT ?) as tmp)',
+                           [jid, jid, offset]
+                        )
+                     }
+                  } catch (error) {
+                     console.error(`[store-mysql] Failed to clear messages for JID ${jid}:`, error)
+                  }
+               })
+               .finally(() => {
+                  if (self.writeQueues.get(jid) === current) {
+                     self.writeQueues.delete(jid)
+                  }
+               })
+            self.writeQueues.set(jid, current)
             return
          }
 
@@ -493,14 +517,32 @@ class Store {
 
       const jid = msg.key?.remoteJid
       const id = msg.key?.id || msg.id
-      if (this.pool && jid && id) {
-         try {
-            await this.pool.query(
-               'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
-               [jid, id, JSON.stringify(msg), Date.now()]
-            )
-         } catch (error) {
-            console.error('[message-store-mysql] Failed to update receipt in MySQL:', error)
+      if (jid && id) {
+         const list = await this.getMySQLData(jid)
+         const idx = list.findIndex(v => v.key?.id === id || (v as any).id === id)
+         if (idx !== -1) {
+            list[idx] = msg
+         }
+
+         if (this.pool) {
+            const previous = this.writeQueues.get(jid) || Promise.resolve()
+            const current = previous
+               .then(async () => {
+                  try {
+                     await this.pool.query(
+                        'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
+                        [jid, id, JSON.stringify(msg), Date.now()]
+                     )
+                  } catch (error) {
+                     console.error('[store-mysql] Failed to update receipt in MySQL:', error)
+                  }
+               })
+               .finally(() => {
+                  if (this.writeQueues.get(jid) === current) {
+                     this.writeQueues.delete(jid)
+                  }
+               })
+            this.writeQueues.set(jid, current)
          }
       }
    }
@@ -513,14 +555,32 @@ class Store {
 
       const jid = msg.key?.remoteJid
       const id = msg.key?.id || msg.id
-      if (this.pool && jid && id) {
-         try {
-            await this.pool.query(
-               'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
-               [jid, id, JSON.stringify(msg), Date.now()]
-            )
-         } catch (error) {
-            console.error('[message-store-mysql] Failed to update reaction in MySQL:', error)
+      if (jid && id) {
+         const list = await this.getMySQLData(jid)
+         const idx = list.findIndex(v => v.key?.id === id || (v as any).id === id)
+         if (idx !== -1) {
+            list[idx] = msg
+         }
+
+         if (this.pool) {
+            const previous = this.writeQueues.get(jid) || Promise.resolve()
+            const current = previous
+               .then(async () => {
+                  try {
+                     await this.pool.query(
+                        'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
+                        [jid, id, JSON.stringify(msg), Date.now()]
+                     )
+                  } catch (error) {
+                     console.error('[store-mysql] Failed to update reaction in MySQL:', error)
+                  }
+               })
+               .finally(() => {
+                  if (this.writeQueues.get(jid) === current) {
+                     this.writeQueues.delete(jid)
+                  }
+               })
+            this.writeQueues.set(jid, current)
          }
       }
    }
@@ -614,14 +674,6 @@ class Store {
          })
          if (instanceMap.size === 0) this.messageId.delete(instance)
       })
-
-      if (this.fallbackStore) {
-         Object.values(this.fallbackStore).forEach((msgArray) => {
-            if (msgArray && msgArray.length > 100) {
-               msgArray.splice(0, msgArray.length - 100)
-            }
-         })
-      }
 
       Object.values(this.stories).forEach((storyArray) => {
          if (storyArray && storyArray.length > 30) {

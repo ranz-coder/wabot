@@ -11,7 +11,8 @@ class Store {
 
    private cache = new Map<string, WAMessage[]>()
    private maxCachedJids = 15
-   private writeTimeouts = new Map<string, NodeJS.Timeout>()
+   private pendingJidWrites = new Set<string>()
+   private writeQueues = new Map<string, Promise<any>>()
    private fallbackStore: Record<string, WAMessage[]> | null = null
    private fallbackChats: Record<string, any> | null = null
 
@@ -23,7 +24,8 @@ class Store {
 
    private chatsCache = new Map<string, any>()
    private chatsFilePath: string
-   private chatsWriteTimeout: NodeJS.Timeout | null = null
+   private chatsPendingWrite = false
+   private chatsProxyInstance: Record<string, any>
 
    constructor(dir: string = 'stores', max: number = 250) {
       this.client = null
@@ -36,40 +38,56 @@ class Store {
          fs.mkdirSync(this.storeDir, { recursive: true })
       }
 
+      this.chatsProxyInstance = this.createChatsProxy()
       this.loadChats()
       setInterval(() => this.cleanupExpiredMessages(), 120000)
    }
 
    private loadChats(): void {
-      if (fs.existsSync(this.chatsFilePath)) {
-         try {
-            const content = fs.readFileSync(this.chatsFilePath, 'utf-8')
-            const list = JSON.parse(content) as any[]
-            for (const chat of list) {
-               if (chat.id) this.chatsCache.set(chat.id, chat)
-            }
-         } catch (error) {
-            console.error('[message-store-json] Failed to load chats:', error)
+      try {
+         const content = fs.readFileSync(this.chatsFilePath, 'utf-8')
+         const list = JSON.parse(content) as any[]
+         for (const chat of list) {
+            if (chat.id) this.chatsCache.set(chat.id, chat)
+         }
+      } catch (error: any) {
+         if (error.code !== 'ENOENT') {
+            console.error('[store-json] Failed to load chats:', error)
          }
       }
    }
 
-   private writeChats(): void {
-      if (this.chatsWriteTimeout) {
-         clearTimeout(this.chatsWriteTimeout)
-      }
+   private enqueueWrite(key: string, writeFn: () => Promise<void>): void {
+      const previous = this.writeQueues.get(key) || Promise.resolve()
+      const current = previous
+         .then(writeFn)
+         .catch((err) => console.error(`[store] Write error on ${key}:`, err))
+         .finally(() => {
+            if (this.writeQueues.get(key) === current) {
+               this.writeQueues.delete(key)
+            }
+         })
+      this.writeQueues.set(key, current)
+   }
 
-      this.chatsWriteTimeout = setTimeout(async () => {
-         this.chatsWriteTimeout = null
+   private writeChats(): void {
+      if (this.chatsPendingWrite) return
+      this.chatsPendingWrite = true
+
+      setTimeout(() => {
+         this.chatsPendingWrite = false
          const list = Array.from(this.chatsCache.values())
-         const tempPath = `${this.chatsFilePath}.tmp`
-         try {
-            await fs.promises.writeFile(tempPath, JSON.stringify(list), 'utf-8')
-            await fs.promises.rename(tempPath, this.chatsFilePath)
-         } catch (error) {
-            console.error('[message-store-json] Failed to write chats:', error)
-         }
-      }, 1000)
+
+         this.enqueueWrite('chats', async () => {
+            const tempPath = `${this.chatsFilePath}.tmp`
+            try {
+               await fs.promises.writeFile(tempPath, JSON.stringify(list), 'utf-8')
+               await fs.promises.rename(tempPath, this.chatsFilePath)
+            } catch (error) {
+               console.error('[store-json] Failed to write chats to disk:', error)
+            }
+         })
+      }, 2000)
    }
 
    public config({ dir, max }: StoreConfig): this {
@@ -87,7 +105,7 @@ class Store {
       return this
    }
 
-   public get chats(): Record<string, any> {
+   private createChatsProxy(): Record<string, any> {
       const self = this
       return new Proxy(Object.create(null), {
          get: (target, prop) => {
@@ -105,6 +123,10 @@ class Store {
          },
          getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true })
       }) as Record<string, any>
+   }
+
+   public get chats(): Record<string, any> {
+      return this.chatsProxyInstance
    }
 
    public bind<T extends BotClient>(client: T): T {
@@ -154,7 +176,7 @@ class Store {
    private evictOldestCache(): void {
       if (this.cache.size > this.maxCachedJids) {
          for (const [key] of this.cache) {
-            if (this.writeTimeouts.has(key)) continue
+            if (this.pendingJidWrites.has(key)) continue
 
             this.cache.delete(key)
             if (this.cache.size <= this.maxCachedJids) break
@@ -169,10 +191,6 @@ class Store {
       }
 
       const filePath = this.getFilePath(jid)
-      if (!fs.existsSync(filePath)) {
-         return []
-      }
-
       try {
          const fileContent = fs.readFileSync(filePath, 'utf-8')
          const data = JSON.parse(fileContent) as WAMessage[]
@@ -181,8 +199,11 @@ class Store {
          this.evictOldestCache()
 
          return data
-      } catch (error) {
-         console.error(`[message-store-json] Failed to load JID ${jid} from JSON:`, error)
+      } catch (error: any) {
+         if (error.code === 'ENOENT') {
+            return []
+         }
+         console.error(`[store-json] Failed to read JID ${jid} from JSON:`, error)
          return []
       }
    }
@@ -192,24 +213,26 @@ class Store {
       this.touchJid(jid)
       this.evictOldestCache()
 
-      if (this.writeTimeouts.has(jid)) {
-         clearTimeout(this.writeTimeouts.get(jid)!)
-      }
+      if (this.pendingJidWrites.has(jid)) return
+      this.pendingJidWrites.add(jid)
 
-      const timeout = setTimeout(async () => {
-         this.writeTimeouts.delete(jid)
-         const filePath = this.getFilePath(jid)
-         const tempFilePath = `${filePath}.tmp`
-         try {
-            const jsonStr = JSON.stringify(data)
-            await fs.promises.writeFile(tempFilePath, jsonStr, 'utf-8')
-            await fs.promises.rename(tempFilePath, filePath)
-         } catch (error) {
-            console.error(`[message-store-json] Failed to write JID ${jid} to JSON:`, error)
-         }
-      }, 1000)
+      setTimeout(() => {
+         this.pendingJidWrites.delete(jid)
+         const currentData = this.cache.get(jid)
+         if (!currentData) return
 
-      this.writeTimeouts.set(jid, timeout)
+         this.enqueueWrite(jid, async () => {
+            const filePath = this.getFilePath(jid)
+            const tempFilePath = `${filePath}.tmp`
+            try {
+               const jsonStr = JSON.stringify(currentData)
+               await fs.promises.writeFile(tempFilePath, jsonStr, 'utf-8')
+               await fs.promises.rename(tempFilePath, filePath)
+            } catch (error) {
+               console.error(`[store-json] Failed to write JID ${jid} to JSON:`, error)
+            }
+         })
+      }, 1500)
    }
 
    public loadMessage(jid: string, id: string): WAMessage | null {
@@ -248,20 +271,16 @@ class Store {
       }
 
       sliced.clear = () => {
-         if (self.writeTimeouts.has(jid)) {
-            clearTimeout(self.writeTimeouts.get(jid)!)
-            self.writeTimeouts.delete(jid)
-         }
-
+         self.pendingJidWrites.delete(jid)
          self.cache.delete(jid)
 
          if (offset === 0) {
             const filePath = self.getFilePath(jid)
-            if (fs.existsSync(filePath)) {
-               try {
-                  fs.unlinkSync(filePath)
-               } catch (error) {
-                  console.error(`[message-store-json] Failed to delete JSON file for JID ${jid}:`, error)
+            try {
+               fs.unlinkSync(filePath)
+            } catch (error: any) {
+               if (error.code !== 'ENOENT') {
+                  console.error(`[store-json] Failed to delete JSON file for JID ${jid}:`, error)
                }
             }
          } else {
