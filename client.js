@@ -12,13 +12,10 @@ import extra from './lib/listeners-extra.js'
 import { models, structure } from './lib/models.js'
 import system from './lib/adapter.js'
 
-import memory from '@neoxr/message-store'
-const store = memory.default || memory
+import stores from '@neoxr/store'
+const store = stores.default || stores
 
-store.config({
-   dir: 'messages',
-   max: 250
-})
+store.config({ max: 250 })
 
 const connect = async () => {
    try {
@@ -99,7 +96,7 @@ const connect = async () => {
             }
          })
 
-         extra(system, client)
+         extra(system, client, store)
       })
    } catch (e) {
       Utils.printError(e)
