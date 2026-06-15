@@ -43,6 +43,20 @@ class Store {
       setInterval(() => this.cleanupExpiredMessages(), 120000)
    }
 
+   private toPOJO(obj: any): any {
+      if (obj === null || typeof obj !== 'object') return obj
+      if (Array.isArray(obj)) return obj.map(v => this.toPOJO(v))
+      if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) return obj
+      
+      const res: any = {}
+      for (const key in obj) {
+         if (typeof obj[key] !== 'function') {
+            res[key] = this.toPOJO(obj[key])
+         }
+      }
+      return res
+   }
+
    private loadChats(): void {
       try {
          const content = fs.readFileSync(this.chatsFilePath, 'utf-8')
@@ -76,7 +90,7 @@ class Store {
 
       setTimeout(() => {
          this.chatsPendingWrite = false
-         const list = Array.from(this.chatsCache.values())
+         const list = this.toPOJO(Array.from(this.chatsCache.values()))
 
          this.enqueueWrite('chats', async () => {
             const tempPath = `${this.chatsFilePath}.tmp`
@@ -225,7 +239,9 @@ class Store {
             const filePath = this.getFilePath(jid)
             const tempFilePath = `${filePath}.tmp`
             try {
-               const jsonStr = JSON.stringify(currentData)
+               const cleanData = this.toPOJO(currentData)
+               const jsonStr = JSON.stringify(cleanData)
+               
                await fs.promises.writeFile(tempFilePath, jsonStr, 'utf-8')
                await fs.promises.rename(tempFilePath, filePath)
             } catch (error) {
