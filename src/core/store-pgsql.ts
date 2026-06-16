@@ -59,6 +59,27 @@ class Store {
       setInterval(() => this.cleanupExpiredMessages(), 120000)
    }
 
+   private toPOJO(obj: any, seen = new WeakSet()): any {
+      if (obj === null || typeof obj !== 'object') return obj
+      if (seen.has(obj)) return null
+      if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) return obj
+   
+      seen.add(obj)
+   
+      if (Array.isArray(obj)) {
+         return obj.map(v => this.toPOJO(v, seen))
+      }
+   
+      const res: any = {}
+      for (const key of Object.keys(obj)) {
+         const val = obj[key]
+         if (typeof val !== 'function') {
+            res[key] = this.toPOJO(val, seen)
+         }
+      }
+      return res
+   }
+
    private async initDB(): Promise<void> {
       const Pool = await loadPG()
 
@@ -151,7 +172,7 @@ class Store {
             if (typeof prop !== 'string') return false
             self.chatsCache.set(prop, value)
             if (self.pool) {
-               self.pool.query('INSERT INTO chats (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data', [prop, JSON.stringify(value)]).catch(() => { })
+               self.pool.query('INSERT INTO chats (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data', [prop, JSON.stringify(self.toPOJO(value))]).catch(() => { })
             } else if (self.fallbackChats) {
                self.fallbackChats[prop] = value
             }
@@ -269,7 +290,7 @@ class Store {
                try {
                   await this.pool.query(
                      'INSERT INTO messages (jid, id, data, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (jid, id) DO UPDATE SET data = EXCLUDED.data, created_at = EXCLUDED.created_at',
-                     [jid, msgId, JSON.stringify(msg), Date.now()]
+                     [jid, msgId, JSON.stringify(this.toPOJO(msg)), Date.now()]
                   )
                   await this.pool.query(
                      'DELETE FROM messages WHERE jid = $1 AND id NOT IN (SELECT id FROM messages WHERE jid = $2 ORDER BY created_at DESC LIMIT $3)',
@@ -523,7 +544,7 @@ class Store {
                   try {
                      await this.pool.query(
                         'INSERT INTO messages (jid, id, data, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (jid, id) DO UPDATE SET data = EXCLUDED.data, created_at = EXCLUDED.created_at',
-                        [jid, id, JSON.stringify(msg), Date.now()]
+                        [jid, id, JSON.stringify(this.toPOJO(msg)), Date.now()]
                      )
                   } catch (error) {
                      console.error('[store-pg] Failed to update receipt in PG:', error)
@@ -561,7 +582,7 @@ class Store {
                   try {
                      await this.pool.query(
                         'INSERT INTO messages (jid, id, data, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (jid, id) DO UPDATE SET data = EXCLUDED.data, created_at = EXCLUDED.created_at',
-                        [jid, id, JSON.stringify(msg), Date.now()]
+                        [jid, id, JSON.stringify(this.toPOJO(msg)), Date.now()]
                      )
                   } catch (error) {
                      console.error('[store-pg] Failed to update reaction in PG:', error)

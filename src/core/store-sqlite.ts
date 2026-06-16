@@ -65,6 +65,27 @@ class Store {
       setInterval(() => this.cleanupExpiredMessages(), 120000)
    }
 
+   private toPOJO(obj: any, seen = new WeakSet()): any {
+      if (obj === null || typeof obj !== 'object') return obj
+      if (seen.has(obj)) return null
+      if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) return obj
+   
+      seen.add(obj)
+   
+      if (Array.isArray(obj)) {
+         return obj.map(v => this.toPOJO(v, seen))
+      }
+   
+      const res: any = {}
+      for (const key of Object.keys(obj)) {
+         const val = obj[key]
+         if (typeof val !== 'function') {
+            res[key] = this.toPOJO(val, seen)
+         }
+      }
+      return res
+   }
+
    private async initDB(): Promise<void> {
       const SQLite = await loadSqlite()
 
@@ -164,7 +185,7 @@ class Store {
             if (typeof prop !== 'string') return false
             if (self.db && self.insertChatStmt) {
                try {
-                  self.insertChatStmt.run(prop, JSON.stringify(value))
+                  self.insertChatStmt.run(prop, JSON.stringify(self.toPOJO(value)))
                   return true
                } catch { return false }
             }
@@ -281,7 +302,7 @@ class Store {
          const msgId = msg.key?.id || (msg as any).id
          if (msgId) {
             try {
-               this.insertStmt.run(jid, msgId, JSON.stringify(msg), Date.now())
+               this.insertStmt.run(jid, msgId, JSON.stringify(this.toPOJO(msg)), Date.now())
                this.cleanupStmt.run(jid, jid, this.max)
             } catch (error) {
                console.error('[store-sqlite] Failed to save message to SQLite:', error)
@@ -447,7 +468,7 @@ class Store {
       const id = msg.key?.id || msg.id
       if (this.db && this.insertStmt && jid && id) {
          try {
-            this.insertStmt.run(jid, id, JSON.stringify(msg), Date.now())
+            this.insertStmt.run(jid, id, JSON.stringify(this.toPOJO(msg)), Date.now())
          } catch (error) {
             console.error('[store-sqlite] Failed to update receipt in SQLite:', error)
          }
@@ -464,7 +485,7 @@ class Store {
       const id = msg.key?.id || msg.id
       if (this.db && this.insertStmt && jid && id) {
          try {
-            this.insertStmt.run(jid, id, JSON.stringify(msg), Date.now())
+            this.insertStmt.run(jid, id, JSON.stringify(this.toPOJO(msg)), Date.now())
          } catch (error) {
             console.error('[store-sqlite] Failed to update reaction in SQLite:', error)
          }

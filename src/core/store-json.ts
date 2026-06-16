@@ -43,15 +43,22 @@ class Store {
       setInterval(() => this.cleanupExpiredMessages(), 120000)
    }
 
-   private toPOJO(obj: any): any {
+   private toPOJO(obj: any, seen = new WeakSet()): any {
       if (obj === null || typeof obj !== 'object') return obj
-      if (Array.isArray(obj)) return obj.map(v => this.toPOJO(v))
+      if (seen.has(obj)) return null
       if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) return obj
-      
+   
+      seen.add(obj)
+   
+      if (Array.isArray(obj)) {
+         return obj.map(v => this.toPOJO(v, seen))
+      }
+   
       const res: any = {}
-      for (const key in obj) {
-         if (typeof obj[key] !== 'function') {
-            res[key] = this.toPOJO(obj[key])
+      for (const key of Object.keys(obj)) {
+         const val = obj[key]
+         if (typeof val !== 'function') {
+            res[key] = this.toPOJO(val, seen)
          }
       }
       return res

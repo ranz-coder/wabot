@@ -15,14 +15,6 @@ const loadMongo = async () => {
    }
 }
 
-const cleanObj = (obj: any) => {
-   try {
-      return JSON.parse(JSON.stringify(obj))
-   } catch (e) {
-      return null
-   }
-}
-
 class Store {
    public client: BotClient | null
    public storeDir: string
@@ -34,7 +26,7 @@ class Store {
    private db: any = null
    private messagesCollection: any = null
    private chatsCollection: any = null
-   
+
    private fallbackStore: Record<string, WAMessage[]> | null = null
    private fallbackChats: Record<string, any> | null = null
 
@@ -69,6 +61,27 @@ class Store {
       setInterval(() => this.cleanupExpiredMessages(), 120000)
    }
 
+   private toPOJO(obj: any, seen = new WeakSet()): any {
+      if (obj === null || typeof obj !== 'object') return obj
+      if (seen.has(obj)) return null
+      if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) return obj
+   
+      seen.add(obj)
+   
+      if (Array.isArray(obj)) {
+         return obj.map(v => this.toPOJO(v, seen))
+      }
+   
+      const res: any = {}
+      for (const key of Object.keys(obj)) {
+         const val = obj[key]
+         if (typeof val !== 'function') {
+            res[key] = this.toPOJO(val, seen)
+         }
+      }
+      return res
+   }
+
    private async initDB(): Promise<void> {
       const MongoClient = await loadMongo()
       if (!MongoClient || !this.uri) return
@@ -99,7 +112,7 @@ class Store {
          for (const doc of docs) {
             this.chatsCache.set(doc.id, doc.data)
          }
-      } catch (e) {}
+      } catch (e) { }
    }
 
    private createChatsProxy(): Record<string, any> {
@@ -111,14 +124,16 @@ class Store {
          },
          set: (target, prop, value) => {
             if (typeof prop !== 'string') return false
-            const cleanedValue = cleanObj(value)
+
+            const cleanedValue = self.toPOJO(value)
             self.chatsCache.set(prop, cleanedValue)
+
             if (self.chatsCollection) {
                self.chatsCollection.updateOne(
                   { id: prop },
                   { $set: { data: cleanedValue, updated_at: Date.now() } },
                   { upsert: true }
-               ).catch(() => {})
+               ).catch(() => { })
             } else if (self.fallbackChats) {
                self.fallbackChats[prop] = cleanedValue
             }
@@ -135,7 +150,7 @@ class Store {
 
    public bind<T extends BotClient>(client: T): T {
       this.client = client
-      
+
       client.loadMessage = this.loadMessage.bind(this)
       client.loadMessages = this.loadMessages.bind(this)
       client.addMessage = this.addMessage.bind(this)
@@ -182,8 +197,9 @@ class Store {
       const list = await this.getMongoData(jid)
       list.push(msg)
       if (list.length > this.max) list.shift()
+
       if (this.messagesCollection) {
-         const cleanedMsg = cleanObj(msg)
+         const cleanedMsg = this.toPOJO(msg)
          const previous = this.writeQueues.get(jid) || Promise.resolve()
          const current = previous.then(async () => {
             try {
@@ -195,7 +211,7 @@ class Store {
                      await this.messagesCollection.deleteMany({ _id: { $in: toDelete.map((d: any) => d._id) } })
                   }
                }
-            } catch (e) {}
+            } catch (e) { }
          }).finally(() => { if (this.writeQueues.get(jid) === current) this.writeQueues.delete(jid) })
          this.writeQueues.set(jid, current)
       } else if (this.fallbackStore) {
@@ -211,11 +227,13 @@ class Store {
       const recp = msg.userReceipt.find((m: any) => m.userJid === receipt.userJid)
       if (recp) Object.assign(recp, receipt)
       else msg.userReceipt.push(receipt)
+
       const jid = msg.key?.remoteJid
       const id = msg.key?.id || msg.id
+
       if (jid && id && this.messagesCollection) {
-         const cleanedMsg = cleanObj(msg)
-         this.messagesCollection.updateOne({ jid, id }, { $set: { data: cleanedMsg } }).catch(() => {})
+         const cleanedMsg = this.toPOJO(msg)
+         this.messagesCollection.updateOne({ jid, id }, { $set: { data: cleanedMsg } }).catch(() => { })
       }
    }
 
@@ -224,11 +242,13 @@ class Store {
       const authorID = getKeyAuthor(reaction.key)
       msg.reactions = (msg.reactions || []).filter((r: any) => getKeyAuthor(r.key) !== authorID)
       if (reaction.text) msg.reactions.push(reaction)
+
       const jid = msg.key?.remoteJid
       const id = msg.key?.id || msg.id
+
       if (jid && id && this.messagesCollection) {
-         const cleanedMsg = cleanObj(msg)
-         this.messagesCollection.updateOne({ jid, id }, { $set: { data: cleanedMsg } }).catch(() => {})
+         const cleanedMsg = this.toPOJO(msg)
+         this.messagesCollection.updateOne({ jid, id }, { $set: { data: cleanedMsg } }).catch(() => { })
       }
    }
 
@@ -286,7 +306,7 @@ class Store {
       const list = Object.values(this.contacts).slice(offset)
       return Object.assign(list, {
          count: () => Object.keys(this.contacts).length - offset,
-         clear: () => { if(offset === 0) this.contacts = Object.create(null) }
+         clear: () => { if (offset === 0) this.contacts = Object.create(null) }
       })
    }
 

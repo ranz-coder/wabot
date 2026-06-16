@@ -59,6 +59,27 @@ class Store {
       setInterval(() => this.cleanupExpiredMessages(), 120000)
    }
 
+   private toPOJO(obj: any, seen = new WeakSet()): any {
+      if (obj === null || typeof obj !== 'object') return obj
+      if (seen.has(obj)) return null
+      if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) return obj
+   
+      seen.add(obj)
+   
+      if (Array.isArray(obj)) {
+         return obj.map(v => this.toPOJO(v, seen))
+      }
+   
+      const res: any = {}
+      for (const key of Object.keys(obj)) {
+         const val = obj[key]
+         if (typeof val !== 'function') {
+            res[key] = this.toPOJO(val, seen)
+         }
+      }
+      return res
+   }
+
    private async initDB(): Promise<void> {
       const mysql = await loadMySQL()
 
@@ -159,7 +180,7 @@ class Store {
             if (typeof prop !== 'string') return false
             self.chatsCache.set(prop, value)
             if (self.pool) {
-               self.pool.query('INSERT INTO chats (id, data) VALUES (?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data)', [prop, JSON.stringify(value)]).catch(() => { })
+               self.pool.query('INSERT INTO chats (id, data) VALUES (?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data)', [prop, JSON.stringify(self.toPOJO(value))]).catch(() => { })
             } else if (self.fallbackChats) {
                self.fallbackChats[prop] = value
             }
@@ -277,7 +298,7 @@ class Store {
                try {
                   await this.pool.query(
                      'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
-                     [jid, msgId, JSON.stringify(msg), Date.now()]
+                     [jid, msgId, JSON.stringify(this.toPOJO(msg)), Date.now()]
                   )
                   await this.pool.query(
                      'DELETE FROM messages WHERE jid = ? AND id NOT IN (SELECT id FROM (SELECT id FROM messages WHERE jid = ? ORDER BY created_at DESC LIMIT ?) as tmp)',
@@ -531,7 +552,7 @@ class Store {
                   try {
                      await this.pool.query(
                         'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
-                        [jid, id, JSON.stringify(msg), Date.now()]
+                        [jid, id, JSON.stringify(this.toPOJO(msg)), Date.now()]
                      )
                   } catch (error) {
                      console.error('[store-mysql] Failed to update receipt in MySQL:', error)
@@ -569,7 +590,7 @@ class Store {
                   try {
                      await this.pool.query(
                         'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
-                        [jid, id, JSON.stringify(msg), Date.now()]
+                        [jid, id, JSON.stringify(this.toPOJO(msg)), Date.now()]
                      )
                   } catch (error) {
                      console.error('[store-mysql] Failed to update reaction in MySQL:', error)

@@ -60,6 +60,27 @@ class Store {
       setInterval(() => this.cleanupExpiredMessages(), 120000)
    }
 
+   private toPOJO(obj: any, seen = new WeakSet()): any {
+      if (obj === null || typeof obj !== 'object') return obj
+      if (seen.has(obj)) return null
+      if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) return obj
+   
+      seen.add(obj)
+   
+      if (Array.isArray(obj)) {
+         return obj.map(v => this.toPOJO(v, seen))
+      }
+   
+      const res: any = {}
+      for (const key of Object.keys(obj)) {
+         const val = obj[key]
+         if (typeof val !== 'function') {
+            res[key] = this.toPOJO(val, seen)
+         }
+      }
+      return res
+   }
+
    private async initDB(): Promise<void> {
       const RedisModule = await loadRedis()
 
@@ -154,7 +175,7 @@ class Store {
             if (typeof prop !== 'string') return false
             self.chatsCache.set(prop, value)
             if (self.redis) {
-               self.redis.set(`chat_store:${prop}`, JSON.stringify(value)).catch(() => { })
+               self.redis.set(`chat_store:${prop}`, JSON.stringify(self.toPOJO(value))).catch(() => { })
             } else if (self.fallbackChats) {
                self.fallbackChats[prop] = value
             }
@@ -257,7 +278,8 @@ class Store {
          const current = previous
             .then(async () => {
                try {
-                  await this.redis.set(`msg_store:${jid}`, JSON.stringify(currentData))
+                  const cleanData = this.toPOJO(currentData)
+                  await this.redis.set(`msg_store:${jid}`, JSON.stringify(cleanData))
                } catch (error) {
                   console.error(`[store-redis] Failed to save JID ${jid} to Redis:`, error)
                }
