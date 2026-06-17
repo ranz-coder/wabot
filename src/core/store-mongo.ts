@@ -65,13 +65,13 @@ class Store {
       if (obj === null || typeof obj !== 'object') return obj
       if (seen.has(obj)) return null
       if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) return obj
-   
+
       seen.add(obj)
-   
+
       if (Array.isArray(obj)) {
          return obj.map(v => this.toPOJO(v, seen))
       }
-   
+
       const res: any = {}
       for (const key of Object.keys(obj)) {
          const val = obj[key]
@@ -108,7 +108,11 @@ class Store {
    private async preloadChats(): Promise<void> {
       if (!this.chatsCollection) return
       try {
-         const docs = await this.chatsCollection.find({}).project({ id: 1, data: 1 }).toArray()
+         const docs = await this.chatsCollection.find({})
+            .sort({ updated_at: -1 })
+            .limit(500)
+            .project({ id: 1, data: 1 })
+            .toArray()
          for (const doc of docs) {
             this.chatsCache.set(doc.id, doc.data)
          }
@@ -183,8 +187,9 @@ class Store {
       if (this.cache.has(jid)) return this.cache.get(jid)!
       if (!this.messagesCollection) return []
       try {
-         const docs = await this.messagesCollection.find({ jid }).sort({ created_at: 1 }).limit(this.max).toArray()
-         const data = docs.map((doc: any) => doc.data)
+         const limitVal = this.max > 100 ? 100 : this.max
+         const docs = await this.messagesCollection.find({ jid }).sort({ created_at: -1 }).limit(limitVal).toArray()
+         const data = docs.map((doc: any) => doc.data).reverse()
          this.cache.set(jid, data)
          if (this.cache.size > this.maxCachedJids) this.cache.delete(this.cache.keys().next().value)
          return data
@@ -194,26 +199,43 @@ class Store {
    public async addMessage(jid: string, msg: WAMessage): Promise<void> {
       const msgId = msg.key?.id || (msg as any).id
       if (!msgId) return
-      const list = await this.getMongoData(jid)
-      list.push(msg)
-      if (list.length > this.max) list.shift()
 
       if (this.messagesCollection) {
          const cleanedMsg = this.toPOJO(msg)
          const previous = this.writeQueues.get(jid) || Promise.resolve()
+
          const current = previous.then(async () => {
             try {
-               await this.messagesCollection.updateOne({ jid, id: msgId }, { $set: { data: cleanedMsg, created_at: Date.now() } }, { upsert: true })
-               if (list.length >= this.max) {
-                  const count = await this.messagesCollection.countDocuments({ jid })
-                  if (count > this.max + 10) {
-                     const toDelete = await this.messagesCollection.find({ jid }).sort({ created_at: 1 }).limit(count - this.max).project({ _id: 1 }).toArray()
+               await this.messagesCollection.updateOne(
+                  { jid, id: msgId },
+                  { $set: { data: cleanedMsg, created_at: Date.now() } },
+                  { upsert: true }
+               )
+
+               const count = await this.messagesCollection.countDocuments({ jid })
+               if (count > this.max) {
+                  const toDelete = await this.messagesCollection.find({ jid })
+                     .sort({ created_at: 1 })
+                     .limit(count - this.max)
+                     .project({ _id: 1 })
+                     .toArray()
+
+                  if (toDelete.length > 0) {
                      await this.messagesCollection.deleteMany({ _id: { $in: toDelete.map((d: any) => d._id) } })
                   }
                }
             } catch (e) { }
-         }).finally(() => { if (this.writeQueues.get(jid) === current) this.writeQueues.delete(jid) })
+         }).finally(() => {
+            if (this.writeQueues.get(jid) === current) this.writeQueues.delete(jid)
+         })
+
          this.writeQueues.set(jid, current)
+
+         if (this.cache.has(jid)) {
+            const list = this.cache.get(jid)!
+            list.push(msg)
+            if (list.length > 100) list.shift()
+         }
       } else if (this.fallbackStore) {
          if (!this.fallbackStore[jid]) this.fallbackStore[jid] = []
          this.fallbackStore[jid].push(msg)
@@ -253,12 +275,35 @@ class Store {
    }
 
    public async loadMessage(jid: string, id: string): Promise<WAMessage | null> {
-      const list = await this.getMongoData(jid)
+      if (this.messagesCollection) {
+         try {
+            const doc = await this.messagesCollection.findOne({ jid, id })
+            return doc ? doc.data : null
+         } catch {
+            return null
+         }
+      }
+
+      const list = this.fallbackStore?.[jid] || []
       return list.find(v => v.key?.id === id || (v as any).id === id) || null
    }
 
-   public async loadMessages(jid: string, count?: number): Promise<WAMessage[] | null> {
-      const list = await this.getMongoData(jid)
+   public async loadMessages(jid: string, count: number = 25): Promise<WAMessage[] | null> {
+      if (this.messagesCollection) {
+         try {
+            const docs = await this.messagesCollection.find({ jid })
+               .sort({ created_at: -1 })
+               .limit(count)
+               .toArray()
+
+            if (docs.length === 0) return null
+            return docs.map((doc: any) => doc.data).reverse()
+         } catch {
+            return null
+         }
+      }
+
+      const list = this.fallbackStore?.[jid] || []
       if (list.length === 0) return null
       return [...list].reverse().slice(0, count)
    }
