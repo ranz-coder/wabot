@@ -588,4 +588,5 @@ class Store {
 }
 
 const store = new Store('stores')
+
 export default store
