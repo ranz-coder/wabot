@@ -380,10 +380,36 @@ class Store {
    }
 
    public async getAllMessages(jid: string, offset: number = 0) {
-      const list = await this.getMongoData(jid)
+      let list: WAMessage[] = []
+
+      if (this.messagesCollection) {
+         try {
+            const docs = await this.messagesCollection.find({ jid })
+               .sort({ created_at: -1 })
+               .limit(this.max)
+               .toArray()
+            list = docs.map((doc: any) => doc.data).reverse()
+         } catch {
+            list = []
+         }
+      } else {
+         list = await this.getMongoData(jid)
+      }
+
       const sliced = list.slice(offset)
       return Object.assign(sliced, {
-         count: async () => (await this.getMongoData(jid)).length - offset,
+         count: async () => {
+            if (this.messagesCollection) {
+               try {
+                  const total = await this.messagesCollection.countDocuments({ jid })
+                  const actualTotal = total > this.max ? this.max : total
+                  return actualTotal - offset
+               } catch {
+                  return 0 - offset
+               }
+            }
+            return list.length - offset
+         },
          clear: async () => {
             this.cache.delete(jid)
             if (this.messagesCollection) await this.messagesCollection.deleteMany({ jid })
