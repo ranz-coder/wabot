@@ -26,12 +26,18 @@ class Store {
    private db: any = null
    private messagesCollection: any = null
    private chatsCollection: any = null
+   private contactsCollection: any = null
+   private storiesCollection: any = null
 
    private fallbackStore: Record<string, WAMessage[]> | null = null
    private fallbackChats: Record<string, any> | null = null
+   private fallbackContacts: Record<string, Contact> | null = null
 
-   public contacts: Record<string, Contact> = Object.create(null)
+   private contactsCache = new Map<string, Contact>()
+   private contactsProxyInstance: Record<string, Contact>
+
    public stories: Record<string, any[]> = Object.create(null)
+
    public presences: Record<string, { [participant: string]: PresenceData }> = Object.create(null)
    public state: ConnectionState = { connection: 'close' }
    public messageId: Map<string, Map<string, { at: number }>> = new Map()
@@ -49,13 +55,16 @@ class Store {
       this.max = max
       this.uri = uri || process.env.USE_STORE
       this.database = 'mongodb'
+
       this.chatsProxyInstance = this.createChatsProxy()
+      this.contactsProxyInstance = this.createContactsProxy()
 
       if (this.uri?.includes('mongodb')) {
          this.initDB()
       } else {
          this.fallbackStore = Object.create(null)
          this.fallbackChats = Object.create(null)
+         this.fallbackContacts = Object.create(null)
       }
 
       setInterval(() => this.cleanupExpiredMessages(), 120000)
@@ -89,18 +98,30 @@ class Store {
          this.mongoClient = new MongoClient(this.uri, { maxPoolSize: 10, minPoolSize: 1 })
          await this.mongoClient.connect()
          this.db = this.mongoClient.db()
+
          this.messagesCollection = this.db.collection('messages')
          this.chatsCollection = this.db.collection('chats')
+         this.contactsCollection = this.db.collection('contacts')
+         this.storiesCollection = this.db.collection('stories')
+
          await this.messagesCollection.createIndex({ jid: 1, id: 1 }, { unique: true })
          await this.messagesCollection.createIndex({ jid: 1, created_at: -1 })
          await this.chatsCollection.createIndex({ id: 1 }, { unique: true })
+         await this.contactsCollection.createIndex({ jid: 1 }, { unique: true })
+         await this.storiesCollection.createIndex({ jid: 1, id: 1 }, { unique: true })
+         await this.storiesCollection.createIndex({ created_at: 1 })
+
          await this.preloadChats()
+         await this.preloadContacts()
+
          this.fallbackStore = null
          this.fallbackChats = null
+         this.fallbackContacts = null
       } catch (error) {
          if (!this.fallbackStore) {
             this.fallbackStore = Object.create(null)
             this.fallbackChats = Object.create(null)
+            this.fallbackContacts = Object.create(null)
          }
       }
    }
@@ -115,6 +136,20 @@ class Store {
             .toArray()
          for (const doc of docs) {
             this.chatsCache.set(doc.id, doc.data)
+         }
+      } catch (e) { }
+   }
+
+   private async preloadContacts(): Promise<void> {
+      if (!this.contactsCollection) return
+      try {
+         const docs = await this.contactsCollection.find({})
+            .sort({ updated_at: -1 })
+            .limit(1000)
+            .project({ jid: 1, data: 1 })
+            .toArray()
+         for (const doc of docs) {
+            this.contactsCache.set(doc.jid, doc.data)
          }
       } catch (e) { }
    }
@@ -148,8 +183,41 @@ class Store {
       }) as Record<string, any>
    }
 
+   private createContactsProxy(): Record<string, Contact> {
+      const self = this
+      return new Proxy(Object.create(null), {
+         get: (target, prop) => {
+            if (typeof prop !== 'string' || prop === 'toJSON') return undefined
+            return self.contactsCache.get(prop) || self.fallbackContacts?.[prop]
+         },
+         set: (target, prop, value) => {
+            if (typeof prop !== 'string') return false
+
+            const cleanedValue = self.toPOJO(value)
+            self.contactsCache.set(prop, cleanedValue)
+
+            if (self.contactsCollection) {
+               self.contactsCollection.updateOne(
+                  { jid: prop },
+                  { $set: { data: cleanedValue, updated_at: Date.now() } },
+                  { upsert: true }
+               ).catch(() => { })
+            } else if (self.fallbackContacts) {
+               self.fallbackContacts[prop] = cleanedValue
+            }
+            return true
+         },
+         ownKeys: () => self.contactsCollection ? Array.from(self.contactsCache.keys()) : Object.keys(self.fallbackContacts || {}),
+         getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true })
+      }) as Record<string, Contact>
+   }
+
    public get chats(): Record<string, any> {
       return this.chatsProxyInstance
+   }
+
+   public get contacts(): Record<string, Contact> {
+      return this.contactsProxyInstance
    }
 
    public bind<T extends BotClient>(client: T): T {
@@ -167,6 +235,7 @@ class Store {
       client.getAllContacts = this.getAllContacts.bind(this)
       client.updateMessageWithReceipt = this.updateMessageWithReceipt.bind(this)
       client.updateMessageWithReaction = this.updateMessageWithReaction.bind(this)
+
       client.loadStories = this.loadStories.bind(this)
       client.loadStory = this.loadStory.bind(this)
       client.addStory = this.addStory.bind(this)
@@ -351,7 +420,16 @@ class Store {
       const list = Object.values(this.contacts).slice(offset)
       return Object.assign(list, {
          count: () => Object.keys(this.contacts).length - offset,
-         clear: () => { if (offset === 0) this.contacts = Object.create(null) }
+         clear: () => {
+            if (offset === 0) {
+               this.contactsCache.clear()
+               if (this.contactsCollection) {
+                  this.contactsCollection.deleteMany({}).catch(() => { })
+               } else if (this.fallbackContacts) {
+                  this.fallbackContacts = Object.create(null)
+               }
+            }
+         }
       })
    }
 
@@ -376,7 +454,13 @@ class Store {
          map.forEach((val, msgId) => { if (now - val.at > 600000) map.delete(msgId) })
          if (map.size === 0) this.messageId.delete(key)
       })
-      Object.keys(this.stories).forEach(k => { if (this.stories[k].length > 20) this.stories[k] = this.stories[k].slice(-20) })
+
+      if (this.storiesCollection) {
+         const twentyFourHoursAgo = now - 86400000
+         this.storiesCollection.deleteMany({ created_at: { $lt: twentyFourHoursAgo } }).catch(() => { })
+      } else {
+         Object.keys(this.stories).forEach(k => { if (this.stories[k].length > 20) this.stories[k] = this.stories[k].slice(-20) })
+      }
    }
 
    public async getAllMessages(jid: string, offset: number = 0) {
@@ -417,26 +501,82 @@ class Store {
       })
    }
 
-   public loadStories(jid: string, count?: number) {
+   public async addStory(jid: string, story: any): Promise<void> {
+      const storyId = story.key?.id || story.id
+      if (!storyId) return
+
+      if (this.storiesCollection) {
+         const cleanedStory = this.toPOJO(story)
+         await this.storiesCollection.updateOne(
+            { jid, id: storyId },
+            { $set: { data: cleanedStory, created_at: Date.now() } },
+            { upsert: true }
+         ).catch(() => { })
+      } else {
+         if (!this.stories[jid]) this.stories[jid] = []
+         this.stories[jid].push(story)
+         if (this.stories[jid].length > 50) this.stories[jid].shift()
+      }
+   }
+
+   public async loadStories(jid: string, count?: number): Promise<any[]> {
+      if (this.storiesCollection) {
+         try {
+            const query = this.storiesCollection.find({ jid }).sort({ created_at: -1 })
+            if (count) query.limit(count)
+            const docs = await query.toArray()
+            return docs.map((doc: any) => doc.data).reverse()
+         } catch {
+            return []
+         }
+      }
       const list = this.stories[jid] || []
       return [...list].reverse().slice(0, count)
    }
 
-   public loadStory(jid: string, id: string) {
+   public async loadStory(jid: string, id: string): Promise<any | null> {
+      if (this.storiesCollection) {
+         try {
+            const doc = await this.storiesCollection.findOne({ jid, id })
+            return doc ? doc.data : null
+         } catch {
+            return null
+         }
+      }
       return (this.stories[jid] || []).find((v: any) => v.key?.id === id) || null
    }
 
-   public addStory(jid: string, story: any) {
-      if (!this.stories[jid]) this.stories[jid] = []
-      this.stories[jid].push(story)
-      if (this.stories[jid].length > 50) this.stories[jid].shift()
-   }
+   public async getAllStories(jid: string, offset: number = 0) {
+      let list: any[] = []
+      if (this.storiesCollection) {
+         try {
+            const docs = await this.storiesCollection.find({ jid }).sort({ created_at: -1 }).toArray()
+            list = docs.map((doc: any) => doc.data).reverse()
+         } catch { }
+      } else {
+         list = this.stories[jid] || []
+      }
 
-   public getAllStories(jid: string, offset: number = 0) {
-      const list = (this.stories[jid] || []).slice(offset)
-      return Object.assign(list, {
-         count: () => (this.stories[jid] || []).length - offset,
-         clear: () => { delete this.stories[jid] }
+      const sliced = list.slice(offset)
+      return Object.assign(sliced, {
+         count: async () => {
+            if (this.storiesCollection) {
+               try {
+                  const total = await this.storiesCollection.countDocuments({ jid })
+                  return total - offset
+               } catch {
+                  return 0 - offset
+               }
+            }
+            return (this.stories[jid] || []).length - offset
+         },
+         clear: async () => {
+            if (this.storiesCollection) {
+               await this.storiesCollection.deleteMany({ jid }).catch(() => { })
+            } else {
+               delete this.stories[jid]
+            }
+         }
       })
    }
 
