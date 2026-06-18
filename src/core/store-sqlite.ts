@@ -90,13 +90,13 @@ class Store {
       if (obj === null || typeof obj !== 'object') return obj
       if (seen.has(obj)) return null
       if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) return obj
-   
+
       seen.add(obj)
-   
+
       if (Array.isArray(obj)) {
          return obj.map(v => this.toPOJO(v, seen))
       }
-   
+
       const res: any = {}
       for (const key of Object.keys(obj)) {
          const val = obj[key]
@@ -145,8 +145,7 @@ class Store {
             
             CREATE TABLE IF NOT EXISTS chats (
                id TEXT PRIMARY KEY,
-               data TEXT,
-               updated_at INTEGER
+               data TEXT
             );
             
             CREATE TABLE IF NOT EXISTS contacts (
@@ -164,6 +163,10 @@ class Store {
             );
             CREATE INDEX IF NOT EXISTS idx_stories_jid_created_at ON stories (jid, created_at DESC);
          `)
+
+         try {
+            this.db.exec('ALTER TABLE chats ADD COLUMN updated_at INTEGER;')
+         } catch (e) { }
 
          this.insertStmt = this.db.prepare('INSERT OR REPLACE INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?)')
          this.cleanupStmt = this.db.prepare('DELETE FROM messages WHERE jid = ? AND id NOT IN (SELECT id FROM messages WHERE jid = ? ORDER BY created_at DESC LIMIT ?)')
