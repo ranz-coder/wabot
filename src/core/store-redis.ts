@@ -25,20 +25,22 @@ class Store {
    private redis: any = null
    private fallbackStore: Record<string, WAMessage[]> | null = null
    private fallbackChats: Record<string, any> | null = null
+   private fallbackContacts: Record<string, Contact> | null = null
 
-   public contacts: Record<string, Contact> = Object.create(null)
+   private contactsCache = new Map<string, Contact>()
+   private contactsProxyInstance: Record<string, Contact>
+
    public stories: Record<string, any[]> = Object.create(null)
    public presences: Record<string, { [participant: string]: PresenceData }> = Object.create(null)
    public state: ConnectionState = { connection: 'close' }
    public messageId: Map<string, Map<string, { at: number }>> = new Map()
 
    private cache = new Map<string, WAMessage[]>()
-   private maxCachedJids = 15
+   private maxCachedJids = 10
    private pendingJidWrites = new Set<string>()
    private writeQueues = new Map<string, Promise<any>>()
 
    private chatsCache = new Map<string, any>()
-   private isChatsPreloaded = false
    private chatsProxyInstance: Record<string, any>
 
    constructor(dir: string = 'stores', max: number = 250, uri?: string) {
@@ -50,8 +52,10 @@ class Store {
 
       this.fallbackStore = Object.create(null)
       this.fallbackChats = Object.create(null)
+      this.fallbackContacts = Object.create(null)
 
       this.chatsProxyInstance = this.createChatsProxy()
+      this.contactsProxyInstance = this.createContactsProxy()
 
       if (process.env?.USE_STORE?.includes('redis')) {
          this.initDB()
@@ -64,13 +68,13 @@ class Store {
       if (obj === null || typeof obj !== 'object') return obj
       if (seen.has(obj)) return null
       if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) return obj
-   
+
       seen.add(obj)
-   
+
       if (Array.isArray(obj)) {
          return obj.map(v => this.toPOJO(v, seen))
       }
-   
+
       const res: any = {}
       for (const key of Object.keys(obj)) {
          const val = obj[key]
@@ -110,6 +114,11 @@ class Store {
 
          await this.redis.connect()
          await this.preloadChats()
+         await this.preloadContacts()
+
+         this.fallbackStore = null
+         this.fallbackChats = null
+         this.fallbackContacts = null
       } catch (error) {
          console.error('[store-redis] Failed to initialize Redis. Falling back to RAM-only mode:', error)
          this.redis = null
@@ -119,25 +128,40 @@ class Store {
    private async preloadChats(): Promise<void> {
       if (!this.redis) return
       try {
-         let cursor = 0
-         do {
-            const reply = await this.redis.scan(cursor, { MATCH: 'chat_store:*', COUNT: 100 })
-            cursor = Number(reply.cursor)
-            const keys = reply.keys
-            if (keys && keys.length > 0) {
-               const loadPromises = keys.map(async (key: string) => {
-                  const raw = await this.redis.get(key)
-                  if (raw) {
-                     const id = key.replace('chat_store:', '')
-                     this.chatsCache.set(id, JSON.parse(raw))
-                  }
-               })
-               await Promise.all(loadPromises)
+         let cursor = '0'
+         const reply = await this.redis.scan(cursor, { MATCH: 'chat_store:*', COUNT: 500 })
+         const keys = reply.keys
+         if (keys && keys.length > 0) {
+            for (const key of keys) {
+               const raw = await this.redis.get(key)
+               if (raw) {
+                  const id = key.replace('chat_store:', '')
+                  this.chatsCache.set(id, JSON.parse(raw))
+               }
             }
-         } while (cursor !== 0)
-         this.isChatsPreloaded = true
+         }
       } catch (error) {
          console.error('[store-redis] Failed to preload chats:', error)
+      }
+   }
+
+   private async preloadContacts(): Promise<void> {
+      if (!this.redis) return
+      try {
+         let cursor = '0'
+         const reply = await this.redis.scan(cursor, { MATCH: 'contact_store:*', COUNT: 1000 })
+         const keys = reply.keys
+         if (keys && keys.length > 0) {
+            for (const key of keys) {
+               const raw = await this.redis.get(key)
+               if (raw) {
+                  const jid = key.replace('contact_store:', '')
+                  this.contactsCache.set(jid, JSON.parse(raw))
+               }
+            }
+         }
+      } catch (error) {
+         console.error('[store-redis] Failed to preload contacts:', error)
       }
    }
 
@@ -173,11 +197,12 @@ class Store {
          },
          set: (target, prop, value) => {
             if (typeof prop !== 'string') return false
-            self.chatsCache.set(prop, value)
+            const cleanedValue = self.toPOJO(value)
+            self.chatsCache.set(prop, cleanedValue)
             if (self.redis) {
-               self.redis.set(`chat_store:${prop}`, JSON.stringify(self.toPOJO(value))).catch(() => { })
+               self.redis.set(`chat_store:${prop}`, JSON.stringify(cleanedValue)).catch(() => { })
             } else if (self.fallbackChats) {
-               self.fallbackChats[prop] = value
+               self.fallbackChats[prop] = cleanedValue
             }
             return true
          },
@@ -188,8 +213,37 @@ class Store {
       }) as Record<string, any>
    }
 
+   private createContactsProxy(): Record<string, Contact> {
+      const self = this
+      return new Proxy(Object.create(null), {
+         get: (target, prop) => {
+            if (typeof prop !== 'string' || ['constructor', 'prototype', 'toJSON'].includes(prop)) return undefined
+            return self.contactsCache.get(prop) || self.fallbackContacts?.[prop]
+         },
+         set: (target, prop, value) => {
+            if (typeof prop !== 'string') return false
+            const cleanedValue = self.toPOJO(value)
+            self.contactsCache.set(prop, cleanedValue)
+            if (self.redis) {
+               self.redis.set(`contact_store:${prop}`, JSON.stringify(cleanedValue)).catch(() => { })
+            } else if (self.fallbackContacts) {
+               self.fallbackContacts[prop] = cleanedValue
+            }
+            return true
+         },
+         ownKeys: () => {
+            return self.redis ? Array.from(self.contactsCache.keys()) : (self.fallbackContacts ? Object.keys(self.fallbackContacts) : [])
+         },
+         getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true })
+      }) as Record<string, Contact>
+   }
+
    public get chats(): Record<string, any> {
       return this.chatsProxyInstance
+   }
+
+   public get contacts(): Record<string, Contact> {
+      return this.contactsProxyInstance
    }
 
    public bind<T extends BotClient>(client: T): T {
@@ -484,16 +538,18 @@ class Store {
       }
 
       sliced.clear = () => {
+         this.contactsCache.clear()
          if (offset === 0) {
-            for (const key in this.contacts) {
-               delete this.contacts[key]
+            if (this.redis) {
+               this.redis.scan('0', { MATCH: 'contact_store:*' }).then(async (reply: any) => {
+                  const keys = reply.keys
+                  if (keys && keys.length > 0) {
+                     await Promise.all(keys.map((k: string) => this.redis.del(k)))
+                  }
+               }).catch(() => { })
             }
-         } else {
-            const keys = Object.keys(this.contacts)
-            if (offset < keys.length) {
-               for (let i = offset; i < keys.length; i++) {
-                  delete this.contacts[keys[i]]
-               }
+            if (this.fallbackContacts) {
+               this.fallbackContacts = Object.create(null)
             }
          }
       }
@@ -538,20 +594,52 @@ class Store {
       }
    }
 
-   public loadStories(jid: string, count?: number): any[] | null {
+   public async loadStories(jid: string, count?: number): Promise<any[] | null> {
+      if (this.redis) {
+         try {
+            const reply = await this.redis.scan('0', { MATCH: `story_store:${jid}:*`, COUNT: 100 })
+            const keys = reply.keys
+            if (!keys || keys.length === 0) return null
+            const loadPromises = keys.map((k: string) => this.redis.get(k))
+            const raws = await Promise.all(loadPromises)
+            const stories = raws.filter(Boolean).map(r => JSON.parse(r))
+            stories.sort((a: any, b: any) => (b.created_at || 0) - (a.created_at || 0))
+            return count ? stories.slice(0, count).reverse() : stories.reverse()
+         } catch {
+            return null
+         }
+      }
       const list = this.stories[jid]
       if (!list || list.length === 0) return null
       const slice = count && count > 0 ? list.slice(-count) : list
       return [...slice].reverse()
    }
 
-   public loadStory(jid: string, id: string): any | null {
+   public async loadStory(jid: string, id: string): Promise<any | null> {
+      if (this.redis) {
+         try {
+            const raw = await this.redis.get(`story_store:${jid}:${id}`)
+            return raw ? JSON.parse(raw) : null
+         } catch {
+            return null
+         }
+      }
       const list = this.stories[jid]
       if (!list || list.length === 0) return null
       return list.find((v: any) => v.key?.id === id || v.id === id) || null
    }
 
-   public addStory(jid: string, story: any): void {
+   public async addStory(jid: string, story: any): Promise<void> {
+      const storyId = story.key?.id || story.id
+      if (!storyId) return
+
+      if (this.redis) {
+         try {
+            await this.redis.set(`story_store:${jid}:${storyId}`, JSON.stringify(this.toPOJO(story)), { EX: 86400 })
+         } catch { }
+         return
+      }
+
       if (!this.stories[jid]) {
          this.stories[jid] = []
       }
@@ -562,22 +650,55 @@ class Store {
       }
    }
 
-   public getAllStories(jid: string, offset: number = 0) {
-      const list = this.stories[jid] || []
-      const sliced = (offset > 0 ? list.slice(offset) : list) as any[] & { count(): number; clear(): void }
+   public async getAllStories(jid: string, offset: number = 0) {
+      let list: any[] = []
+      if (this.redis) {
+         try {
+            const reply = await this.redis.scan('0', { MATCH: `story_store:${jid}:*`, COUNT: 100 })
+            const keys = reply.keys
+            if (keys && keys.length > 0) {
+               const raws = await Promise.all(keys.map((k: string) => this.redis.get(k)))
+               list = raws.filter(Boolean).map(r => JSON.parse(r))
+               list.sort((a: any, b: any) => (b.created_at || 0) - (a.created_at || 0)).reverse()
+            }
+         } catch { }
+      } else {
+         list = this.stories[jid] || []
+      }
 
-      sliced.count = () => {
+      const sliced = (offset > 0 ? list.slice(offset) : list) as any[] & { count(): Promise<number>; clear(): Promise<void> }
+
+      sliced.count = async () => {
+         if (this.redis) {
+            try {
+               const reply = await this.redis.scan('0', { MATCH: `story_store:${jid}:*`, COUNT: 100 })
+               const total = reply.keys?.length || 0
+               return Math.max(0, total - offset)
+            } catch {
+               return 0
+            }
+         }
          const currentList = this.stories[jid] || []
          return Math.max(0, currentList.length - offset)
       }
 
-      sliced.clear = () => {
-         if (offset === 0) {
-            delete this.stories[jid]
+      sliced.clear = async () => {
+         if (this.redis) {
+            try {
+               const reply = await this.redis.scan('0', { MATCH: `story_store:${jid}:*` })
+               const keys = reply.keys
+               if (keys && keys.length > 0) {
+                  await Promise.all(keys.map((k: string) => this.redis.del(k)))
+               }
+            } catch { }
          } else {
-            const currentList = this.stories[jid] || []
-            if (offset < currentList.length) {
-               this.stories[jid] = currentList.slice(0, offset)
+            if (offset === 0) {
+               delete this.stories[jid]
+            } else {
+               const currentList = this.stories[jid] || []
+               if (offset < currentList.length) {
+                  this.stories[jid] = currentList.slice(0, offset)
+               }
             }
          }
       }
@@ -628,11 +749,13 @@ class Store {
          if (instanceMap.size === 0) this.messageId.delete(instance)
       })
 
-      Object.values(this.stories).forEach((storyArray) => {
-         if (storyArray && storyArray.length > 30) {
-            storyArray.splice(0, storyArray.length - 30)
-         }
-      })
+      if (!this.redis) {
+         Object.values(this.stories).forEach((storyArray) => {
+            if (storyArray && storyArray.length > 30) {
+               storyArray.splice(0, storyArray.length - 30)
+            }
+         })
+      }
    }
 }
 
