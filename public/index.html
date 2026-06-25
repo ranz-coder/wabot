@@ -5,7 +5,20 @@
    <meta charset="UTF-8">
    <meta name="viewport" content="width=device-width, initial-scale=1.0">
    <title>neoxr-bot - Lightweight & Modular WhatsApp Bot</title>
-   <link rel="icon" type="image/x-icon" href="/favicon.ico">
+   <meta name="author" content="Wildan Izzudin (Neoxr)">
+   <meta name="description"
+      content="A simple, fast, and lightweight WhatsApp bot script built on top of Baileys library and powered by @neoxr/wb. Optimized for low server resource consumption.">
+   <meta name="keywords"
+      content="neoxr-bot, neoxr, whatsapp bot, baileys bot, @neoxr/wb, wildan izzudin, modular bot, nodejs whatsapp bot">
+   <meta property="og:title" content="neoxr-bot - Lightweight & Modular WhatsApp Bot">
+   <meta property="og:description"
+      content="A simple, fast, and lightweight WhatsApp bot script built on top of Baileys library and powered by @neoxr/wb. Optimized for low server resource consumption.">
+   <meta property="og:url" content="https://github.com/neoxr/neoxr-bot">
+   <meta property="og:site_name" content="neoxr-bot">
+   <meta property="og:image" content="https://opengraph.githubassets.com/1/neoxr/neoxr-bot">
+   <meta property="og:type" content="website">
+   <link rel="icon" type="image/x-icon"
+      href="https://cryptybyte.pages.dev/file/BQACAgUAAxkDAAIvomo86GWJRRt-aPFMYTM-ch_mskxgAAJmIgACJhzhVclbt89BRfWiPAQ">
    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
    <style>
       @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap");
@@ -32,8 +45,6 @@
          --error-bg: rgba(239, 68, 68, 0.08);
          --pattern-color: rgba(17, 17, 17, 0.04);
          --bg-nav-scrolled: rgba(250, 250, 250, 0.8);
-
-         /* Premium colors */
          --premium: #d97706;
          --premium-hover: #b45309;
          --premium-bg: rgba(217, 119, 6, 0.08);
@@ -61,11 +72,9 @@
          --error-bg: rgba(248, 113, 113, 0.08);
          --pattern-color: rgba(250, 250, 250, 0.03);
          --bg-nav-scrolled: rgba(9, 9, 11, 0.8);
-
-         /* Premium colors */
-         --premium: #f59e0b;
-         --premium-hover: #fbbf24;
-         --premium-bg: rgba(245, 158, 11, 0.08);
+         --premium: #fbbf24;
+         --premium-hover: #f59e0b;
+         --premium-bg: rgba(251, 191, 36, 0.08);
       }
 
       * {
@@ -94,7 +103,46 @@
          overflow-x: hidden;
       }
 
-      /* Fixed Header & Glassmorphism */
+      #preloader {
+         position: fixed;
+         top: 0;
+         left: 0;
+         width: 100%;
+         height: 100%;
+         background-color: var(--bg-body);
+         display: flex;
+         align-items: center;
+         justify-content: center;
+         z-index: 9999;
+         opacity: 1;
+         visibility: visible;
+         transition: opacity 0.5s ease, visibility 0.5s ease;
+      }
+
+      #preloader.fade-out {
+         opacity: 0;
+         visibility: hidden;
+      }
+
+      .spinner {
+         width: 44px;
+         height: 44px;
+         border: 2.5px solid var(--border);
+         border-top-color: var(--primary);
+         border-radius: 50%;
+         animation: spin 0.8s cubic-bezier(0.5, 0.1, 0.4, 0.9) infinite;
+      }
+
+      @keyframes spin {
+         0% {
+            transform: rotate(0deg);
+         }
+
+         100% {
+            transform: rotate(360deg);
+         }
+      }
+
       header {
          position: fixed;
          top: 0;
@@ -175,7 +223,6 @@
          background: var(--copy-btn-hover);
       }
 
-      /* Container Setup with space for fixed header */
       .container {
          width: 100%;
          max-width: 900px;
@@ -185,7 +232,6 @@
          padding: 7rem 1.5rem 3.5rem 1.5rem;
       }
 
-      /* Hero Section */
       .hero {
          display: flex;
          flex-direction: column;
@@ -224,7 +270,6 @@
          margin-top: 0.5rem;
       }
 
-      /* Buttons styling */
       .btn {
          display: inline-flex;
          align-items: center;
@@ -270,7 +315,6 @@
          border-color: var(--premium-hover);
       }
 
-      /* NPM Package Core Banner Info */
       .npm-info-banner {
          background: var(--bg-card);
          border: 1px solid var(--border);
@@ -313,7 +357,6 @@
          line-height: 1.5;
       }
 
-      /* Premium Section v5.1-Optima */
       .premium-card {
          background: var(--bg-card);
          border: 2px dashed var(--premium);
@@ -338,6 +381,7 @@
          display: flex;
          flex-direction: column;
          gap: 0.25rem;
+         color: var(--text-main);
       }
 
       .premium-title h3 {
@@ -346,7 +390,6 @@
          display: flex;
          align-items: center;
          gap: 0.5rem;
-         color: var(--text-main);
       }
 
       .premium-title h3 i {
@@ -376,7 +419,7 @@
 
       .premium-item {
          display: flex;
-         align-items: flex-start;
+         align-items: center;
          gap: 0.5rem;
          font-size: 0.9rem;
          color: var(--text-muted);
@@ -385,7 +428,10 @@
       .premium-item i {
          color: var(--premium);
          font-size: 1rem;
-         margin-top: 0.15rem;
+         display: flex;
+         align-items: center;
+         justify-content: center;
+         flex-shrink: 0;
       }
 
       .premium-footer {
@@ -413,7 +459,6 @@
          color: var(--text-main);
       }
 
-      /* Main Sections Styling */
       section {
          display: flex;
          flex-direction: column;
@@ -432,14 +477,12 @@
          font-size: 0.95rem;
       }
 
-      /* Key Features Continuous Marquee System */
       .marquee-container {
          overflow: hidden;
          width: 100%;
          display: flex;
          position: relative;
          padding: 1rem 0;
-         /* Mask gradient edges for smooth transition */
          mask-image: linear-gradient(to right, transparent, white 8%, white 92%, transparent);
          -webkit-mask-image: linear-gradient(to right, transparent, white 8%, white 92%, transparent);
       }
@@ -461,7 +504,6 @@
          }
 
          100% {
-            /* Scroll to exact half width of mirrored elements for seamless infinite loop */
             transform: translateX(-50%);
          }
       }
@@ -503,7 +545,6 @@
          line-height: 1.5;
       }
 
-      /* Technical Requirements */
       .spec-row {
          display: grid;
          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -547,7 +588,6 @@
          color: var(--text-main);
       }
 
-      /* Terminal UI Style for CLI Codes */
       .terminal-container {
          background: var(--result-bg);
          border: 1px solid var(--result-border);
@@ -649,7 +689,6 @@
          background: var(--copy-btn-hover);
       }
 
-      /* Footer */
       footer {
          border-top: 1px solid var(--border);
          padding-top: 2rem;
@@ -671,7 +710,6 @@
          text-decoration: underline;
       }
 
-      /* Page Transitions / Animations */
       @keyframes fadeInUp {
          from {
             opacity: 0;
@@ -709,7 +747,6 @@
          animation-delay: 0.5s;
       }
 
-      /* Responsive Adjustments */
       @media (max-width: 768px) {
          .container {
             padding-top: 5.5rem;
@@ -756,7 +793,14 @@
 
 <body class="dark">
 
-   <!-- Fixed Header Navbar -->
+   <div id="preloader">
+      <div class="spinner"></div>
+   </div>
+
+   <audio id="bg-audio"
+      src="https://cryptybyte.pages.dev/file/CQACAgUAAxkDAAIvoWo84MzI0YU3TEtjckWGk_gm-ZMaAAIwIgACJhzhVeWMg2b0YC7YPAQ"
+      loop playsinline preload="auto"></audio>
+
    <header id="navbar">
       <div class="nav-wrapper">
          <a href="#" class="logo-group">
@@ -771,10 +815,8 @@
       </div>
    </header>
 
-   <!-- Main Content Container -->
    <div class="container">
 
-      <!-- Hero Section -->
       <section class="hero animate-fade-up">
          <span class="badge-version">Baileys WhatsApp Bot</span>
          <h1>Fast, Lightweight & Modular WhatsApp Bot</h1>
@@ -788,13 +830,12 @@
          </div>
       </section>
 
-      <!-- Premium Script v5.1-Optima Info Card -->
       <section class="animate-fade-up delay-1">
          <div class="premium-card">
             <div class="premium-header">
                <div class="premium-title">
-                  <h3><i class="bi bi-gem"></i> neoxr-bot v5.1-optima</h3>
-                  <p style="color: var(--text-muted); font-size: 0.9rem;">The Ultimate Premium Whatsapp Script</p>
+                  <h3><i class="bi bi-gem"></i> Script v5.1-optima</h3>
+                  <p style="color: var(--text-muted); font-size: 0.9rem;">Premium Whatsapp Bot Script</p>
                </div>
                <span class="premium-badge">Premium Version</span>
             </div>
@@ -843,7 +884,6 @@
          </div>
       </section>
 
-      <!-- @neoxr/wb NPM Package Info Banner -->
       <section class="animate-fade-up delay-2">
          <div class="npm-info-banner">
             <div class="npm-content">
@@ -859,7 +899,6 @@
          </div>
       </section>
 
-      <!-- Key Features Scrolling Marquee Block -->
       <section id="features" class="animate-fade-up delay-3">
          <div class="section-header">
             <h2>Key Features</h2>
@@ -869,51 +908,45 @@
          <div class="marquee-container">
             <div class="marquee-track">
 
-               <!-- Card 1 -->
                <div class="marquee-card">
                   <div class="card-icon"><i class="bi bi-database"></i></div>
                   <h3>Multi-Database Support</h3>
                   <p>Flexible state storage supporting PostgreSQL, Postgres, MySQL, SQLite, Redis, and Local JSON.</p>
                </div>
-               <!-- Card 2 -->
                <div class="marquee-card">
-                  <div class="card-icon"><i class="bi bi-memory"></i></div>
+                  <div class="card-icon"><i class="bi bi-cpu-fill"></i></div>
                   <h3>Temporary Store</h3>
                   <p>Integrated temp store systems enabling blazing fast temporary database cache reads.</p>
                </div>
-               <!-- Card 3 -->
                <div class="marquee-card">
                   <div class="card-icon"><i class="bi bi-download"></i></div>
                   <h3>Social Downloader</h3>
                   <p>Auto-download capabilities supporting YouTube, TikTok, Instagram, and Facebook links.</p>
                </div>
-               <!-- Card 4 -->
                <div class="marquee-card">
-                  <div class="card-icon"><i class="bi bi-cpu"></i></div>
+                  <div class="card-icon"><i class="bi bi-lightning-charge"></i></div>
                   <h3>Highly Optimized</h3>
                   <p>Tailored lightweight architecture resulting in low RAM footprints and minimal delays.</p>
                </div>
-               <!-- Card 5 -->
                <div class="marquee-card">
                   <div class="card-icon"><i class="bi bi-terminal"></i></div>
                   <h3>ESM Plugin Model</h3>
                   <p>Extensible script design utilizing dynamic ES Modules for easy command additions.</p>
                </div>
-               <!-- Card 6 -->
                <div class="marquee-card">
                   <div class="card-icon"><i class="bi bi-shield-lock"></i></div>
                   <h3>Group Moderation</h3>
                   <p>Rich administrative controls: anti-link systems, welcome cards, and level role permissions.</p>
                </div>
 
-               <!-- MIRRORED CARDS FOR SEAMLESS INFINITE LOOP -->
                <div class="marquee-card">
                   <div class="card-icon"><i class="bi bi-database"></i></div>
                   <h3>Multi-Database Support</h3>
-                  <p>Flexible state storage supporting PostgreSQL, Postgres, MySQL, SQLite, Redis, and Local JSON.</p>
+                  <p>Flexible state storage supporting MongoDB, PostgreSQL, Postgres, MySQL, SQLite, Redis, and Local
+                     JSON.</p>
                </div>
                <div class="marquee-card">
-                  <div class="card-icon"><i class="bi bi-memory"></i></div>
+                  <div class="card-icon"><i class="bi bi-cpu-fill"></i></div>
                   <h3>Temporary Store</h3>
                   <p>Integrated temp store systems enabling blazing fast temporary database cache reads.</p>
                </div>
@@ -923,7 +956,7 @@
                   <p>Auto-download capabilities supporting YouTube, TikTok, Instagram, and Facebook links.</p>
                </div>
                <div class="marquee-card">
-                  <div class="card-icon"><i class="bi bi-cpu"></i></div>
+                  <div class="card-icon"><i class="bi bi-lightning-charge"></i></div>
                   <h3>Highly Optimized</h3>
                   <p>Tailored lightweight architecture resulting in low RAM footprints and minimal delays.</p>
                </div>
@@ -942,7 +975,6 @@
          </div>
       </section>
 
-      <!-- Specifications Section -->
       <section class="animate-fade-up delay-4">
          <div class="section-header">
             <h2>System Requirements</h2>
@@ -973,7 +1005,6 @@
          </div>
       </section>
 
-      <!-- Installation Section -->
       <section id="installation" class="animate-fade-up delay-5">
          <div class="section-header">
             <h2>Quick Installation (Base Version)</h2>
@@ -1003,7 +1034,6 @@
          </div>
       </section>
 
-      <!-- Footer -->
       <footer>
          <p>&copy; 2026 neoxr-bot Project. Licensed under the GPL-3.0 License.</p>
          <p>Created with dedication by <a href="https://github.com/neoxr" target="_blank">Wildan Izzudin</a></p>
@@ -1012,7 +1042,14 @@
    </div>
 
    <script>
-      // Navigation scroll glassmorphism effect
+      const preloader = document.getElementById('preloader');
+      window.addEventListener('load', () => {
+         preloader.classList.add('fade-out');
+         setTimeout(() => {
+            preloader.remove();
+         }, 500);
+      });
+
       const navbar = document.getElementById('navbar');
       window.addEventListener('scroll', () => {
          if (window.scrollY > 20) {
@@ -1022,7 +1059,6 @@
          }
       });
 
-      // Theme toggler logic
       const themeToggleBtn = document.getElementById('theme-toggle');
       const body = document.body;
 
@@ -1035,7 +1071,6 @@
          }
       }
 
-      // Initial Theme Check from System Preferences
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
       if (localStorage.getItem('theme') === 'light') {
          body.classList.remove('dark');
@@ -1056,7 +1091,6 @@
          updateThemeIcon();
       });
 
-      // Copy CLI button logic
       const copyBtn = document.getElementById('copy-btn');
       const commandsToCopy = `git clone https://github.com/neoxr/neoxr-bot.git\ncd neoxr-bot\nnpm install\nnode .`;
 
@@ -1069,6 +1103,43 @@
          }).catch(err => {
             console.error('Copy failed: ', err);
          });
+      });
+
+      const audio = document.getElementById('bg-audio');
+      let audioStarted = false;
+
+      function startAudio() {
+         if (audioStarted) return;
+         audio.muted = false;
+         const playPromise = audio.play();
+         if (playPromise !== undefined) {
+            playPromise.then(() => {
+               audioStarted = true;
+               cleanEventListeners();
+            }).catch(err => {
+            });
+         }
+      }
+
+      function cleanEventListeners() {
+         document.removeEventListener('click', startAudio);
+         document.removeEventListener('touchstart', startAudio);
+         document.removeEventListener('touchend', startAudio);
+         document.removeEventListener('mousedown', startAudio);
+         document.removeEventListener('scroll', startAudio);
+         document.removeEventListener('keydown', startAudio);
+      }
+
+      document.addEventListener('click', startAudio);
+      document.addEventListener('touchstart', startAudio);
+      document.addEventListener('touchend', startAudio);
+      document.addEventListener('mousedown', startAudio);
+      document.addEventListener('scroll', startAudio);
+      document.addEventListener('keydown', startAudio);
+
+      window.addEventListener('load', () => {
+         audio.load();
+         startAudio();
       });
    </script>
 </body>
