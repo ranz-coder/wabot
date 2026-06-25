@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <title>neoxr-bot - Lightweight & Modular WhatsApp Bot</title>
+   <link rel="icon" type="image/x-icon" href="/favicon.ico">
+   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+   <style>
+      @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap");
+
+      :root {
+         --bg-body: #fafafa;
+         --bg-card: #ffffff;
+         --text-main: #111111;
+         --text-muted: #666666;
+         --border: #e5e5e5;
+         --primary: #111111;
+         --primary-hover: #222222;
+         --primary-text: #ffffff;
+         --upload-bg: #fafafa;
+         --upload-hover: #f4f4f5;
+         --file-info-bg: #f4f4f5;
+         --result-bg: #fafafa;
+         --result-border: #e5e5e5;
+         --copy-btn-bg: #f4f4f5;
+         --copy-btn-text: #111111;
+         --copy-btn-hover: #e5e5e5;
+         --success: #10b981;
+         --error: #ef4444;
+         --error-bg: rgba(239, 68, 68, 0.08);
+         --pattern-color: rgba(17, 17, 17, 0.04);
+         --bg-nav-scrolled: rgba(250, 250, 250, 0.8);
+
+         /* Premium colors */
+         --premium: #d97706;
+         --premium-hover: #b45309;
+         --premium-bg: rgba(217, 119, 6, 0.08);
+      }
+
+      body.dark {
+         --bg-body: #09090b;
+         --bg-card: #18181b;
+         --text-main: #f4f4f5;
+         --text-muted: #a1a1aa;
+         --border: #27272a;
+         --primary: #fafafa;
+         --primary-hover: #e4e4e7;
+         --primary-text: #09090b;
+         --upload-bg: #18181b;
+         --upload-hover: #27272a;
+         --file-info-bg: #27272a;
+         --result-bg: #09090b;
+         --result-border: #27272a;
+         --copy-btn-bg: #27272a;
+         --copy-btn-text: #fafafa;
+         --copy-btn-hover: #3f3f46;
+         --success: #34d399;
+         --error: #f87171;
+         --error-bg: rgba(248, 113, 113, 0.08);
+         --pattern-color: rgba(250, 250, 250, 0.03);
+         --bg-nav-scrolled: rgba(9, 9, 11, 0.8);
+
+         /* Premium colors */
+         --premium: #f59e0b;
+         --premium-hover: #fbbf24;
+         --premium-bg: rgba(245, 158, 11, 0.08);
+      }
+
+      * {
+         box-sizing: border-box;
+         margin: 0;
+         padding: 0;
+         transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+      }
+
+      html,
+      body {
+         margin: 0;
+         scroll-behavior: smooth;
+      }
+
+      body {
+         font-family: "Space Grotesk", sans-serif;
+         background-color: var(--bg-body);
+         background-image: radial-gradient(var(--pattern-color) 1.5px, transparent 1.5px);
+         background-size: 24px 24px;
+         color: var(--text-main);
+         display: flex;
+         flex-direction: column;
+         align-items: center;
+         min-height: 100vh;
+         overflow-x: hidden;
+      }
+
+      /* Fixed Header & Glassmorphism */
+      header {
+         position: fixed;
+         top: 0;
+         left: 0;
+         right: 0;
+         z-index: 1000;
+         display: flex;
+         justify-content: center;
+         background: transparent;
+         border-bottom: 1px solid transparent;
+         transition: background-color 0.3s ease, border-color 0.3s ease, backdrop-filter 0.3s ease, box-shadow 0.3s ease;
+         width: 100%;
+      }
+
+      header.scrolled {
+         background: var(--bg-nav-scrolled);
+         backdrop-filter: blur(12px);
+         -webkit-backdrop-filter: blur(12px);
+         border-bottom: 1px solid var(--border);
+         box-shadow: 0 4px 30px rgba(0, 0, 0, 0.03);
+      }
+
+      .nav-wrapper {
+         width: 100%;
+         max-width: 900px;
+         padding: 1.25rem 1.5rem;
+         display: flex;
+         justify-content: space-between;
+         align-items: center;
+         transition: padding 0.3s ease;
+      }
+
+      header.scrolled .nav-wrapper {
+         padding: 0.95rem 1.5rem;
+      }
+
+      .logo-group {
+         display: flex;
+         align-items: center;
+         gap: 0.5rem;
+         text-decoration: none;
+         color: var(--text-main);
+      }
+
+      .logo-group i {
+         font-size: 1.5rem;
+         color: var(--success);
+      }
+
+      .logo-text {
+         font-size: 1.25rem;
+         font-weight: 700;
+         letter-spacing: -0.02em;
+      }
+
+      .nav-actions {
+         display: flex;
+         align-items: center;
+         gap: 1rem;
+      }
+
+      .theme-toggle-btn {
+         background: var(--copy-btn-bg);
+         border: 1px solid var(--border);
+         color: var(--copy-btn-text);
+         padding: 0.5rem;
+         border-radius: 8px;
+         cursor: pointer;
+         display: flex;
+         align-items: center;
+         justify-content: center;
+         width: 36px;
+         height: 36px;
+         font-size: 1.1rem;
+      }
+
+      .theme-toggle-btn:hover {
+         background: var(--copy-btn-hover);
+      }
+
+      /* Container Setup with space for fixed header */
+      .container {
+         width: 100%;
+         max-width: 900px;
+         display: flex;
+         flex-direction: column;
+         gap: 3.5rem;
+         padding: 7rem 1.5rem 3.5rem 1.5rem;
+      }
+
+      /* Hero Section */
+      .hero {
+         display: flex;
+         flex-direction: column;
+         align-items: flex-start;
+         gap: 1.25rem;
+         padding: 1rem 0;
+      }
+
+      .badge-version {
+         background: var(--error-bg);
+         color: var(--error);
+         border: 1px solid rgba(239, 68, 68, 0.15);
+         padding: 0.25rem 0.75rem;
+         border-radius: 99px;
+         font-size: 0.8rem;
+         font-weight: 600;
+      }
+
+      .hero h1 {
+         font-size: 2.75rem;
+         font-weight: 700;
+         line-height: 1.15;
+         letter-spacing: -0.03em;
+      }
+
+      .hero p {
+         font-size: 1.1rem;
+         color: var(--text-muted);
+         line-height: 1.6;
+         max-width: 680px;
+      }
+
+      .hero-buttons {
+         display: flex;
+         gap: 0.75rem;
+         margin-top: 0.5rem;
+      }
+
+      /* Buttons styling */
+      .btn {
+         display: inline-flex;
+         align-items: center;
+         gap: 0.5rem;
+         padding: 0.65rem 1.25rem;
+         border-radius: 8px;
+         font-weight: 600;
+         text-decoration: none;
+         font-size: 0.95rem;
+         cursor: pointer;
+         transition: background-color 0.15s, border-color 0.15s;
+      }
+
+      .btn-primary {
+         background: var(--primary);
+         color: var(--primary-text);
+         border: 1px solid var(--primary);
+      }
+
+      .btn-primary:hover {
+         background: var(--primary-hover);
+         border-color: var(--primary-hover);
+      }
+
+      .btn-secondary {
+         background: transparent;
+         color: var(--text-main);
+         border: 1px solid var(--border);
+      }
+
+      .btn-secondary:hover {
+         background: var(--upload-hover);
+      }
+
+      .btn-premium {
+         background: var(--premium);
+         color: var(--primary-text);
+         border: 1px solid var(--premium);
+      }
+
+      .btn-premium:hover {
+         background: var(--premium-hover);
+         border-color: var(--premium-hover);
+      }
+
+      /* NPM Package Core Banner Info */
+      .npm-info-banner {
+         background: var(--bg-card);
+         border: 1px solid var(--border);
+         border-radius: 12px;
+         padding: 1.75rem;
+         display: flex;
+         align-items: center;
+         justify-content: space-between;
+         gap: 1.5rem;
+         box-shadow: 0 4px 20px rgba(0, 0, 0, 0.01);
+      }
+
+      .npm-content {
+         display: flex;
+         flex-direction: column;
+         gap: 0.4rem;
+         max-width: 70%;
+      }
+
+      .npm-badge {
+         background: var(--upload-bg);
+         color: var(--text-muted);
+         border: 1px solid var(--border);
+         padding: 0.2rem 0.6rem;
+         border-radius: 6px;
+         font-size: 0.75rem;
+         font-weight: 600;
+         align-self: flex-start;
+         text-transform: uppercase;
+      }
+
+      .npm-info-banner h3 {
+         font-size: 1.25rem;
+         font-weight: 700;
+      }
+
+      .npm-info-banner p {
+         font-size: 0.9rem;
+         color: var(--text-muted);
+         line-height: 1.5;
+      }
+
+      /* Premium Section v5.1-Optima */
+      .premium-card {
+         background: var(--bg-card);
+         border: 2px dashed var(--premium);
+         border-radius: 16px;
+         padding: 2rem;
+         position: relative;
+         display: flex;
+         flex-direction: column;
+         gap: 1.5rem;
+         box-shadow: 0 4px 25px rgba(217, 119, 6, 0.03);
+      }
+
+      .premium-header {
+         display: flex;
+         align-items: center;
+         justify-content: space-between;
+         flex-wrap: wrap;
+         gap: 1rem;
+      }
+
+      .premium-title {
+         display: flex;
+         flex-direction: column;
+         gap: 0.25rem;
+      }
+
+      .premium-title h3 {
+         font-size: 1.5rem;
+         font-weight: 700;
+         display: flex;
+         align-items: center;
+         gap: 0.5rem;
+         color: var(--text-main);
+      }
+
+      .premium-title h3 i {
+         color: var(--premium);
+      }
+
+      .premium-badge {
+         background: var(--premium-bg);
+         color: var(--premium);
+         border: 1px solid var(--premium);
+         padding: 0.25rem 0.75rem;
+         border-radius: 99px;
+         font-size: 0.8rem;
+         font-weight: 700;
+         text-transform: uppercase;
+         letter-spacing: 0.05em;
+      }
+
+      .premium-grid {
+         display: grid;
+         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+         gap: 1rem;
+         border-top: 1px solid var(--border);
+         border-bottom: 1px solid var(--border);
+         padding: 1.5rem 0;
+      }
+
+      .premium-item {
+         display: flex;
+         align-items: flex-start;
+         gap: 0.5rem;
+         font-size: 0.9rem;
+         color: var(--text-muted);
+      }
+
+      .premium-item i {
+         color: var(--premium);
+         font-size: 1rem;
+         margin-top: 0.15rem;
+      }
+
+      .premium-footer {
+         display: flex;
+         justify-content: space-between;
+         align-items: center;
+         flex-wrap: wrap;
+         gap: 1rem;
+      }
+
+      .premium-price {
+         display: flex;
+         flex-direction: column;
+      }
+
+      .premium-price span {
+         font-size: 0.8rem;
+         color: var(--text-muted);
+         text-transform: uppercase;
+      }
+
+      .premium-price strong {
+         font-size: 1.5rem;
+         font-weight: 700;
+         color: var(--text-main);
+      }
+
+      /* Main Sections Styling */
+      section {
+         display: flex;
+         flex-direction: column;
+         gap: 1.5rem;
+      }
+
+      .section-header h2 {
+         font-size: 1.5rem;
+         font-weight: 700;
+         letter-spacing: -0.02em;
+         margin-bottom: 0.35rem;
+      }
+
+      .section-header p {
+         color: var(--text-muted);
+         font-size: 0.95rem;
+      }
+
+      /* Key Features Continuous Marquee System */
+      .marquee-container {
+         overflow: hidden;
+         width: 100%;
+         display: flex;
+         position: relative;
+         padding: 1rem 0;
+         /* Mask gradient edges for smooth transition */
+         mask-image: linear-gradient(to right, transparent, white 8%, white 92%, transparent);
+         -webkit-mask-image: linear-gradient(to right, transparent, white 8%, white 92%, transparent);
+      }
+
+      .marquee-track {
+         display: flex;
+         gap: 1rem;
+         width: max-content;
+         animation: scroll-marquee 35s linear infinite;
+      }
+
+      .marquee-track:hover {
+         animation-play-state: paused;
+      }
+
+      @keyframes scroll-marquee {
+         0% {
+            transform: translateX(0);
+         }
+
+         100% {
+            /* Scroll to exact half width of mirrored elements for seamless infinite loop */
+            transform: translateX(-50%);
+         }
+      }
+
+      .marquee-card {
+         width: 280px;
+         flex-shrink: 0;
+         background: var(--bg-card);
+         border: 1px solid var(--border);
+         border-radius: 12px;
+         padding: 1.5rem;
+         display: flex;
+         flex-direction: column;
+         gap: 0.75rem;
+         box-shadow: 0 4px 15px rgba(0, 0, 0, 0.01);
+      }
+
+      .card-icon {
+         background: var(--upload-bg);
+         border: 1px solid var(--border);
+         width: 40px;
+         height: 40px;
+         border-radius: 8px;
+         display: flex;
+         align-items: center;
+         justify-content: center;
+         font-size: 1.15rem;
+         color: var(--text-main);
+      }
+
+      .marquee-card h3 {
+         font-size: 1.1rem;
+         font-weight: 600;
+      }
+
+      .marquee-card p {
+         color: var(--text-muted);
+         font-size: 0.85rem;
+         line-height: 1.5;
+      }
+
+      /* Technical Requirements */
+      .spec-row {
+         display: grid;
+         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+         gap: 1rem;
+      }
+
+      .spec-item {
+         background: var(--bg-card);
+         border: 1px solid var(--border);
+         border-radius: 10px;
+         padding: 1.25rem;
+         display: flex;
+         align-items: center;
+         gap: 1rem;
+      }
+
+      .spec-item i {
+         font-size: 1.5rem;
+         color: var(--success);
+         background: var(--upload-bg);
+         width: 44px;
+         height: 44px;
+         display: flex;
+         align-items: center;
+         justify-content: center;
+         border-radius: 8px;
+         border: 1px solid var(--border);
+      }
+
+      .spec-info h4 {
+         font-size: 0.8rem;
+         color: var(--text-muted);
+         text-transform: uppercase;
+         letter-spacing: 0.05em;
+         margin-bottom: 0.15rem;
+      }
+
+      .spec-info p {
+         font-size: 1rem;
+         font-weight: 600;
+         color: var(--text-main);
+      }
+
+      /* Terminal UI Style for CLI Codes */
+      .terminal-container {
+         background: var(--result-bg);
+         border: 1px solid var(--result-border);
+         border-radius: 12px;
+         overflow: hidden;
+         display: flex;
+         flex-direction: column;
+         position: relative;
+      }
+
+      .terminal-header {
+         background: var(--bg-card);
+         border-bottom: 1px solid var(--border);
+         padding: 0.75rem 1.25rem;
+         display: flex;
+         justify-content: space-between;
+         align-items: center;
+      }
+
+      .terminal-dots {
+         display: flex;
+         gap: 6px;
+      }
+
+      .terminal-dot {
+         width: 10px;
+         height: 10px;
+         border-radius: 50%;
+      }
+
+      .terminal-dot.red {
+         background: #ef4444;
+      }
+
+      .terminal-dot.yellow {
+         background: #f59e0b;
+      }
+
+      .terminal-dot.green {
+         background: #10b981;
+      }
+
+      .terminal-title {
+         font-size: 0.8rem;
+         color: var(--text-muted);
+         font-family: monospace;
+      }
+
+      .terminal-body {
+         padding: 1.5rem;
+         font-family: monospace;
+         font-size: 0.9rem;
+         line-height: 1.6;
+         overflow-x: auto;
+      }
+
+      .terminal-line {
+         display: flex;
+         gap: 0.75rem;
+         margin-bottom: 0.35rem;
+      }
+
+      .terminal-line:last-child {
+         margin-bottom: 0;
+      }
+
+      .prompt {
+         color: var(--success);
+         user-select: none;
+      }
+
+      .command-text {
+         color: var(--text-main);
+      }
+
+      .comment {
+         color: var(--text-muted);
+      }
+
+      .copy-btn {
+         position: absolute;
+         top: 3.25rem;
+         right: 1.25rem;
+         background: var(--copy-btn-bg);
+         color: var(--copy-btn-text);
+         border: 1px solid var(--border);
+         padding: 0.4rem 0.75rem;
+         border-radius: 6px;
+         cursor: pointer;
+         font-size: 0.8rem;
+         font-family: inherit;
+         display: flex;
+         align-items: center;
+         gap: 0.35rem;
+         z-index: 5;
+      }
+
+      .copy-btn:hover {
+         background: var(--copy-btn-hover);
+      }
+
+      /* Footer */
+      footer {
+         border-top: 1px solid var(--border);
+         padding-top: 2rem;
+         text-align: center;
+         color: var(--text-muted);
+         font-size: 0.85rem;
+         display: flex;
+         flex-direction: column;
+         gap: 0.5rem;
+      }
+
+      footer a {
+         color: var(--text-main);
+         text-decoration: none;
+         font-weight: 600;
+      }
+
+      footer a:hover {
+         text-decoration: underline;
+      }
+
+      /* Page Transitions / Animations */
+      @keyframes fadeInUp {
+         from {
+            opacity: 0;
+            transform: translateY(24px);
+         }
+
+         to {
+            opacity: 1;
+            transform: translateY(0);
+         }
+      }
+
+      .animate-fade-up {
+         opacity: 0;
+         animation: fadeInUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+
+      .delay-1 {
+         animation-delay: 0.1s;
+      }
+
+      .delay-2 {
+         animation-delay: 0.2s;
+      }
+
+      .delay-3 {
+         animation-delay: 0.3s;
+      }
+
+      .delay-4 {
+         animation-delay: 0.4s;
+      }
+
+      .delay-5 {
+         animation-delay: 0.5s;
+      }
+
+      /* Responsive Adjustments */
+      @media (max-width: 768px) {
+         .container {
+            padding-top: 5.5rem;
+            gap: 2.5rem;
+         }
+
+         .npm-info-banner {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 1.25rem;
+         }
+
+         .npm-content {
+            max-width: 100%;
+         }
+
+         .btn {
+            width: 100%;
+            justify-content: center;
+         }
+
+         .premium-footer {
+            flex-direction: column;
+            align-items: flex-start;
+         }
+      }
+
+      @media (max-width: 600px) {
+         .hero h1 {
+            font-size: 2rem;
+         }
+
+         .hero-buttons {
+            flex-direction: column;
+            width: 100%;
+         }
+
+         .spec-row {
+            grid-template-columns: 1fr;
+         }
+      }
+   </style>
+</head>
+
+<body class="dark">
+
+   <!-- Fixed Header Navbar -->
+   <header id="navbar">
+      <div class="nav-wrapper">
+         <a href="#" class="logo-group">
+            <i class="bi bi-robot"></i>
+            <span class="logo-text">neoxr-bot</span>
+         </a>
+         <div class="nav-actions">
+            <button class="theme-toggle-btn" id="theme-toggle" title="Toggle Theme">
+               <i class="bi bi-sun-fill"></i>
+            </button>
+         </div>
+      </div>
+   </header>
+
+   <!-- Main Content Container -->
+   <div class="container">
+
+      <!-- Hero Section -->
+      <section class="hero animate-fade-up">
+         <span class="badge-version">Baileys WhatsApp Bot</span>
+         <h1>Fast, Lightweight & Modular WhatsApp Bot</h1>
+         <p>A simple and efficient WhatsApp bot script built on top of Baileys library. Optimized for quick setup, easy
+            customization, and low server resource consumption.</p>
+         <div class="hero-buttons">
+            <a href="https://github.com/neoxr/neoxr-bot" target="_blank" class="btn btn-primary">
+               <i class="bi bi-github"></i> View Repository
+            </a>
+            <a href="#installation" class="btn btn-secondary">Get Started</a>
+         </div>
+      </section>
+
+      <!-- Premium Script v5.1-Optima Info Card -->
+      <section class="animate-fade-up delay-1">
+         <div class="premium-card">
+            <div class="premium-header">
+               <div class="premium-title">
+                  <h3><i class="bi bi-gem"></i> neoxr-bot v5.1-optima</h3>
+                  <p style="color: var(--text-muted); font-size: 0.9rem;">The Ultimate Premium Whatsapp Script</p>
+               </div>
+               <span class="premium-badge">Premium Version</span>
+            </div>
+
+            <p style="font-size: 0.95rem; color: var(--text-muted); line-height: 1.6;">
+               Gain access to the highly optimized premium edition. Engineered for extreme workloads and fully loaded
+               with robust additional features, clean architecture, and priority updates.
+            </p>
+
+            <div class="premium-grid">
+               <div class="premium-item">
+                  <i class="bi bi-patch-check-fill"></i>
+                  <span>700+ Commands & Free Updates</span>
+               </div>
+               <div class="premium-item">
+                  <i class="bi bi-patch-check-fill"></i>
+                  <span>Chatbot + AI Logic Integration</span>
+               </div>
+               <div class="premium-item">
+                  <i class="bi bi-patch-check-fill"></i>
+                  <span>30+ Mini Games & Active RPG Clan</span>
+               </div>
+               <div class="premium-item">
+                  <i class="bi bi-patch-check-fill"></i>
+                  <span>Jadibot Auto-Reconnect Bot Hosting</span>
+               </div>
+               <div class="premium-item">
+                  <i class="bi bi-patch-check-fill"></i>
+                  <span>Wapify WhatsApp Gateway Support</span>
+               </div>
+               <div class="premium-item">
+                  <i class="bi bi-patch-check-fill"></i>
+                  <span>100K API Key Requests Bonus (1 Year)</span>
+               </div>
+            </div>
+
+            <div class="premium-footer">
+               <div class="premium-price">
+                  <span>Price Start From</span>
+                  <strong>Rp 150,000 / $20.80</strong>
+               </div>
+               <a href="https://shop.neoxr.eu/product/TCnb" target="_blank" class="btn btn-premium">
+                  <i class="bi bi-cart3"></i> Purchase v5.1-optima
+               </a>
+            </div>
+         </div>
+      </section>
+
+      <!-- @neoxr/wb NPM Package Info Banner -->
+      <section class="animate-fade-up delay-2">
+         <div class="npm-info-banner">
+            <div class="npm-content">
+               <span class="npm-badge">Core Engine</span>
+               <h3>Built with @neoxr/wb</h3>
+               <p>This bot is developed using <strong>@neoxr/wb</strong>, an advanced wrapper library for Baileys that
+                  provides high stability, easy message handling, automated state reconnection, and simple storage
+                  session controllers.</p>
+            </div>
+            <a href="https://www.npmjs.com/package/@neoxr/wb" target="_blank" class="btn btn-secondary">
+               <i class="bi bi-box-seam"></i> View NPM Package
+            </a>
+         </div>
+      </section>
+
+      <!-- Key Features Scrolling Marquee Block -->
+      <section id="features" class="animate-fade-up delay-3">
+         <div class="section-header">
+            <h2>Key Features</h2>
+            <p>A continuous look into the essential functionalities built into the system (Hover to pause).</p>
+         </div>
+
+         <div class="marquee-container">
+            <div class="marquee-track">
+
+               <!-- Card 1 -->
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-database"></i></div>
+                  <h3>Multi-Database Support</h3>
+                  <p>Flexible state storage supporting PostgreSQL, Postgres, MySQL, SQLite, Redis, and Local JSON.</p>
+               </div>
+               <!-- Card 2 -->
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-memory"></i></div>
+                  <h3>Temporary Store</h3>
+                  <p>Integrated temp store systems enabling blazing fast temporary database cache reads.</p>
+               </div>
+               <!-- Card 3 -->
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-download"></i></div>
+                  <h3>Social Downloader</h3>
+                  <p>Auto-download capabilities supporting YouTube, TikTok, Instagram, and Facebook links.</p>
+               </div>
+               <!-- Card 4 -->
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-cpu"></i></div>
+                  <h3>Highly Optimized</h3>
+                  <p>Tailored lightweight architecture resulting in low RAM footprints and minimal delays.</p>
+               </div>
+               <!-- Card 5 -->
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-terminal"></i></div>
+                  <h3>ESM Plugin Model</h3>
+                  <p>Extensible script design utilizing dynamic ES Modules for easy command additions.</p>
+               </div>
+               <!-- Card 6 -->
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-shield-lock"></i></div>
+                  <h3>Group Moderation</h3>
+                  <p>Rich administrative controls: anti-link systems, welcome cards, and level role permissions.</p>
+               </div>
+
+               <!-- MIRRORED CARDS FOR SEAMLESS INFINITE LOOP -->
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-database"></i></div>
+                  <h3>Multi-Database Support</h3>
+                  <p>Flexible state storage supporting PostgreSQL, Postgres, MySQL, SQLite, Redis, and Local JSON.</p>
+               </div>
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-memory"></i></div>
+                  <h3>Temporary Store</h3>
+                  <p>Integrated temp store systems enabling blazing fast temporary database cache reads.</p>
+               </div>
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-download"></i></div>
+                  <h3>Social Downloader</h3>
+                  <p>Auto-download capabilities supporting YouTube, TikTok, Instagram, and Facebook links.</p>
+               </div>
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-cpu"></i></div>
+                  <h3>Highly Optimized</h3>
+                  <p>Tailored lightweight architecture resulting in low RAM footprints and minimal delays.</p>
+               </div>
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-terminal"></i></div>
+                  <h3>ESM Plugin Model</h3>
+                  <p>Extensible script design utilizing dynamic ES Modules for easy command additions.</p>
+               </div>
+               <div class="marquee-card">
+                  <div class="card-icon"><i class="bi bi-shield-lock"></i></div>
+                  <h3>Group Moderation</h3>
+                  <p>Rich administrative controls: anti-link systems, welcome cards, and level role permissions.</p>
+               </div>
+
+            </div>
+         </div>
+      </section>
+
+      <!-- Specifications Section -->
+      <section class="animate-fade-up delay-4">
+         <div class="section-header">
+            <h2>System Requirements</h2>
+            <p>Ensure your server or hosting meets these hardware and system specs.</p>
+         </div>
+         <div class="spec-row">
+            <div class="spec-item">
+               <i class="bi bi-cpu"></i>
+               <div class="spec-info">
+                  <h4>Node.js</h4>
+                  <p>v20 or higher</p>
+               </div>
+            </div>
+            <div class="spec-item">
+               <i class="bi bi-hdd-network"></i>
+               <div class="spec-info">
+                  <h4>Memory (RAM)</h4>
+                  <p>1 GB minimum</p>
+               </div>
+            </div>
+            <div class="spec-item">
+               <i class="bi bi-file-earmark-music"></i>
+               <div class="spec-info">
+                  <h4>Media Handler</h4>
+                  <p>FFmpeg Installed</p>
+               </div>
+            </div>
+         </div>
+      </section>
+
+      <!-- Installation Section -->
+      <section id="installation" class="animate-fade-up delay-5">
+         <div class="section-header">
+            <h2>Quick Installation (Base Version)</h2>
+            <p>Run these commands on your terminal to clone, configure, and boot the bot instantly.</p>
+         </div>
+         <div class="terminal-container">
+            <button class="copy-btn" id="copy-btn"><i class="bi bi-copy"></i> Copy CLI</button>
+            <div class="terminal-header">
+               <div class="terminal-dots">
+                  <div class="terminal-dot red"></div>
+                  <div class="terminal-dot yellow"></div>
+                  <div class="terminal-dot green"></div>
+               </div>
+               <div class="terminal-title">bash</div>
+            </div>
+            <div class="terminal-body" id="install-code">
+               <div class="terminal-line"><span class="prompt">$</span><span class="command-text">git clone
+                     https://github.com/neoxr/neoxr-bot.git</span></div>
+               <div class="terminal-line"><span class="prompt">$</span><span class="command-text">cd neoxr-bot</span>
+               </div>
+               <div class="terminal-line"><span class="prompt">$</span><span class="command-text">npm install</span>
+               </div>
+               <div class="terminal-line"><span class="comment"># Edit your configurations inside config.json or env
+                     variables</span></div>
+               <div class="terminal-line"><span class="prompt">$</span><span class="command-text">node .</span></div>
+            </div>
+         </div>
+      </section>
+
+      <!-- Footer -->
+      <footer>
+         <p>&copy; 2026 neoxr-bot Project. Licensed under the GPL-3.0 License.</p>
+         <p>Created with dedication by <a href="https://github.com/neoxr" target="_blank">Wildan Izzudin</a></p>
+      </footer>
+
+   </div>
+
+   <script>
+      // Navigation scroll glassmorphism effect
+      const navbar = document.getElementById('navbar');
+      window.addEventListener('scroll', () => {
+         if (window.scrollY > 20) {
+            navbar.classList.add('scrolled');
+         } else {
+            navbar.classList.remove('scrolled');
+         }
+      });
+
+      // Theme toggler logic
+      const themeToggleBtn = document.getElementById('theme-toggle');
+      const body = document.body;
+
+      function updateThemeIcon() {
+         const icon = themeToggleBtn.querySelector('i');
+         if (body.classList.contains('dark')) {
+            icon.className = 'bi bi-sun-fill';
+         } else {
+            icon.className = 'bi bi-moon-stars-fill';
+         }
+      }
+
+      // Initial Theme Check from System Preferences
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (localStorage.getItem('theme') === 'light') {
+         body.classList.remove('dark');
+      } else if (localStorage.getItem('theme') === 'dark') {
+         body.classList.add('dark');
+      } else if (!prefersDark) {
+         body.classList.remove('dark');
+      }
+      updateThemeIcon();
+
+      themeToggleBtn.addEventListener('click', () => {
+         body.classList.toggle('dark');
+         if (body.classList.contains('dark')) {
+            localStorage.setItem('theme', 'dark');
+         } else {
+            localStorage.setItem('theme', 'light');
+         }
+         updateThemeIcon();
+      });
+
+      // Copy CLI button logic
+      const copyBtn = document.getElementById('copy-btn');
+      const commandsToCopy = `git clone https://github.com/neoxr/neoxr-bot.git\ncd neoxr-bot\nnpm install\nnode .`;
+
+      copyBtn.addEventListener('click', () => {
+         navigator.clipboard.writeText(commandsToCopy).then(() => {
+            copyBtn.innerHTML = '<i class="bi bi-check-lg"></i> Copied!';
+            setTimeout(() => {
+               copyBtn.innerHTML = '<i class="bi bi-copy"></i> Copy CLI';
+            }, 2000);
+         }).catch(err => {
+            console.error('Copy failed: ', err);
+         });
+      });
+   </script>
+</body>
+
+</html>
