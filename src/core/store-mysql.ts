@@ -15,6 +15,30 @@ const loadMySQL = async () => {
    }
 }
 
+const BufferJSON = {
+   replacer: (k: any, value: any) => {
+      if (Buffer.isBuffer(value) || value instanceof Uint8Array || value?.type === 'Buffer') {
+         return {
+            type: 'Buffer',
+            data: Buffer.from(value?.data || value).toString('base64')
+         }
+      }
+      return value
+   },
+   reviver: (_: any, value: any) => {
+      if (typeof value === 'object' && value !== null && (value.buffer === true || value.type === 'Buffer')) {
+         const val = value.data || value.value
+         return typeof val === 'string'
+            ? Buffer.from(val, 'base64')
+            : Buffer.from(val || [])
+      }
+      return value
+   }
+}
+
+const stringify = (obj: any) => JSON.stringify(obj, BufferJSON.replacer)
+const parse = (str: string) => JSON.parse(str, BufferJSON.reviver)
+
 class Store {
    public client: BotClient | null
    public storeDir: string
@@ -178,7 +202,7 @@ class Store {
       try {
          const [rows]: any = await this.pool.query('SELECT id, data FROM chats ORDER BY updated_at DESC LIMIT 500')
          for (const row of rows) {
-            this.chatsCache.set(row.id, JSON.parse(row.data))
+            this.chatsCache.set(row.id, parse(row.data))
          }
       } catch (error) {
          console.error('[store-mysql] Failed to preload chats:', error)
@@ -190,7 +214,7 @@ class Store {
       try {
          const [rows]: any = await this.pool.query('SELECT jid, data FROM contacts ORDER BY updated_at DESC LIMIT 1000')
          for (const row of rows) {
-            this.contactsCache.set(row.jid, JSON.parse(row.data))
+            this.contactsCache.set(row.jid, parse(row.data))
          }
       } catch (error) {
          console.error('[store-mysql] Failed to preload contacts:', error)
@@ -232,7 +256,7 @@ class Store {
             const cleanedValue = self.toPOJO(value)
             self.chatsCache.set(prop, cleanedValue)
             if (self.pool) {
-               self.pool.query('INSERT INTO chats (id, data, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), updated_at = VALUES(updated_at)', [prop, JSON.stringify(cleanedValue), Date.now()]).catch(() => { })
+               self.pool.query('INSERT INTO chats (id, data, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), updated_at = VALUES(updated_at)', [prop, stringify(cleanedValue), Date.now()]).catch(() => { })
             } else if (self.fallbackChats) {
                self.fallbackChats[prop] = cleanedValue
             }
@@ -257,7 +281,7 @@ class Store {
             const cleanedValue = self.toPOJO(value)
             self.contactsCache.set(prop, cleanedValue)
             if (self.pool) {
-               self.pool.query('INSERT INTO contacts (jid, data, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), updated_at = VALUES(updated_at)', [prop, JSON.stringify(cleanedValue), Date.now()]).catch(() => { })
+               self.pool.query('INSERT INTO contacts (jid, data, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), updated_at = VALUES(updated_at)', [prop, stringify(cleanedValue), Date.now()]).catch(() => { })
             } else if (self.fallbackContacts) {
                self.fallbackContacts[prop] = cleanedValue
             }
@@ -318,7 +342,7 @@ class Store {
             'SELECT data FROM messages WHERE jid = ? ORDER BY created_at DESC LIMIT ?',
             [jid, limitVal]
          )
-         const data = rows.map((row: any) => JSON.parse(row.data) as WAMessage).reverse()
+         const data = rows.map((row: any) => parse(row.data) as WAMessage).reverse()
          this.cache.set(jid, data)
          if (this.cache.size > this.maxCachedJids) this.cache.delete(this.cache.keys().next().value)
          return data
@@ -331,7 +355,7 @@ class Store {
       if (this.pool) {
          try {
             const [rows]: any = await this.pool.query('SELECT data FROM messages WHERE jid = ? AND id = ?', [jid, id])
-            return rows.length > 0 ? (JSON.parse(rows[0].data) as WAMessage) : null
+            return rows.length > 0 ? (parse(rows[0].data) as WAMessage) : null
          } catch {
             return null
          }
@@ -348,7 +372,7 @@ class Store {
                [jid, count]
             )
             if (rows.length === 0) return null
-            return rows.map((row: any) => JSON.parse(row.data) as WAMessage).reverse()
+            return rows.map((row: any) => parse(row.data) as WAMessage).reverse()
          } catch {
             return null
          }
@@ -370,7 +394,7 @@ class Store {
                try {
                   await this.pool.query(
                      'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
-                     [jid, msgId, JSON.stringify(cleanedMsg), Date.now()]
+                     [jid, msgId, stringify(cleanedMsg), Date.now()]
                   )
                   const [countResult]: any = await this.pool.query('SELECT COUNT(*) as count FROM messages WHERE jid = ?', [jid])
                   const count = countResult[0]?.count || 0
@@ -422,7 +446,7 @@ class Store {
                'SELECT data FROM messages WHERE jid = ? ORDER BY created_at DESC LIMIT ?',
                [jid, this.max]
             )
-            list = rows.map((row: any) => JSON.parse(row.data) as WAMessage).reverse()
+            list = rows.map((row: any) => parse(row.data) as WAMessage).reverse()
          } catch {
             list = []
          }
@@ -557,7 +581,7 @@ class Store {
                   try {
                      await this.pool.query(
                         'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
-                        [jid, id, JSON.stringify(this.toPOJO(msg)), Date.now()]
+                        [jid, id, stringify(this.toPOJO(msg)), Date.now()]
                      )
                   } catch { }
                })
@@ -593,7 +617,7 @@ class Store {
                   try {
                      await this.pool.query(
                         'INSERT INTO messages (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
-                        [jid, id, JSON.stringify(this.toPOJO(msg)), Date.now()]
+                        [jid, id, stringify(this.toPOJO(msg)), Date.now()]
                      )
                   } catch { }
                })
@@ -625,7 +649,7 @@ class Store {
                rows = res
             }
             if (rows.length === 0) return null
-            return rows.map((row: any) => JSON.parse(row.data))
+            return rows.map((row: any) => parse(row.data))
          } catch {
             return null
          }
@@ -640,7 +664,7 @@ class Store {
       if (this.pool) {
          try {
             const [rows]: any = await this.pool.query('SELECT data FROM stories WHERE jid = ? AND id = ?', [jid, id])
-            return rows.length > 0 ? JSON.parse(rows[0].data) : null
+            return rows.length > 0 ? parse(rows[0].data) : null
          } catch {
             return null
          }
@@ -658,7 +682,7 @@ class Store {
          try {
             await this.pool.query(
                'INSERT INTO stories (jid, id, data, created_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), created_at = VALUES(created_at)',
-               [jid, storyId, JSON.stringify(this.toPOJO(story)), Date.now()]
+               [jid, storyId, stringify(this.toPOJO(story)), Date.now()]
             )
          } catch { }
          return
@@ -682,7 +706,7 @@ class Store {
                'SELECT data FROM stories WHERE jid = ? ORDER BY created_at DESC',
                [jid]
             )
-            list = rows.map((row: any) => JSON.parse(row.data))
+            list = rows.map((row: any) => parse(row.data))
          } catch { }
       } else {
          list = this.stories[jid] || []

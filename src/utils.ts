@@ -2,4 +2,4 @@ export const noSuffix = (str: string): string => (str?.includes(':') && str?.inc
 
 export const getKeyAuthor = (key: any, meId: string = 'me') => (
     (key?.fromMe ? meId : (key?.senderPn || key?.participantPn || key.participant || key.remoteJid)) || ''
-) 
+)
