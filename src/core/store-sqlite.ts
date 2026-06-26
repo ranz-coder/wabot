@@ -16,6 +16,30 @@ const loadSqlite = async () => {
    }
 }
 
+const BufferJSON = {
+   replacer: (k: any, value: any) => {
+      if (Buffer.isBuffer(value) || value instanceof Uint8Array || value?.type === 'Buffer') {
+         return {
+            type: 'Buffer',
+            data: Buffer.from(value?.data || value).toString('base64')
+         }
+      }
+      return value
+   },
+   reviver: (_: any, value: any) => {
+      if (typeof value === 'object' && value !== null && (value.buffer === true || value.type === 'Buffer')) {
+         const val = value.data || value.value
+         return typeof val === 'string'
+            ? Buffer.from(val, 'base64')
+            : Buffer.from(val || [])
+      }
+      return value
+   }
+}
+
+const stringify = (obj: any) => JSON.stringify(obj, BufferJSON.replacer)
+const parse = (str: string) => JSON.parse(str, BufferJSON.reviver)
+
 class Store {
    public client: BotClient | null
    public storeDir: string
@@ -214,7 +238,7 @@ class Store {
       try {
          const rows = this.preloadChatsStmt.all() as { id: string, data: string }[]
          for (const row of rows) {
-            this.chatsCache.set(row.id, JSON.parse(row.data))
+            this.chatsCache.set(row.id, parse(row.data))
          }
       } catch { }
    }
@@ -224,7 +248,7 @@ class Store {
       try {
          const rows = this.preloadContactsStmt.all() as { jid: string, data: string }[]
          for (const row of rows) {
-            this.contactsCache.set(row.jid, JSON.parse(row.data))
+            this.contactsCache.set(row.jid, parse(row.data))
          }
       } catch { }
    }
@@ -264,7 +288,7 @@ class Store {
             self.chatsCache.set(prop, cleanedValue)
             if (self.db && self.insertChatStmt) {
                try {
-                  self.insertChatStmt.run(prop, JSON.stringify(cleanedValue), Date.now())
+                  self.insertChatStmt.run(prop, stringify(cleanedValue), Date.now())
                   return true
                } catch { return false }
             }
@@ -300,7 +324,7 @@ class Store {
             self.contactsCache.set(prop, cleanedValue)
             if (self.db && self.insertContactStmt) {
                try {
-                  self.insertContactStmt.run(prop, JSON.stringify(cleanedValue), Date.now())
+                  self.insertContactStmt.run(prop, stringify(cleanedValue), Date.now())
                   return true
                } catch { return false }
             }
@@ -366,7 +390,7 @@ class Store {
       if (this.db && this.getOneStmt) {
          try {
             const row = this.getOneStmt.get(jid, id) as { data: string } | undefined
-            return row ? (JSON.parse(row.data) as WAMessage) : null
+            return row ? (parse(row.data) as WAMessage) : null
          } catch {
             return null
          }
@@ -397,7 +421,7 @@ class Store {
 
             if (rows.length === 0) return null
 
-            return rows.map(row => JSON.parse(row.data) as WAMessage)
+            return rows.map(row => parse(row.data) as WAMessage)
          } catch {
             return null
          }
@@ -419,7 +443,7 @@ class Store {
          const msgId = msg.key?.id || (msg as any).id
          if (msgId) {
             try {
-               this.insertStmt.run(jid, msgId, JSON.stringify(this.toPOJO(msg)), Date.now())
+               this.insertStmt.run(jid, msgId, stringify(this.toPOJO(msg)), Date.now())
                this.cleanupStmt.run(jid, jid, this.max)
             } catch { }
          }
@@ -442,7 +466,7 @@ class Store {
       if (this.db && this.getAllWithOffsetStmt && this.countStmt && this.deleteWithOffsetStmt) {
          try {
             const rows = this.getAllWithOffsetStmt.all(jid, offset) as { data: string }[]
-            const messages = rows.map(row => JSON.parse(row.data) as WAMessage) as WAMessage[] & { count(): number; clear(): void }
+            const messages = rows.map(row => parse(row.data) as WAMessage) as WAMessage[] & { count(): number; clear(): void }
 
             messages.count = () => {
                try {
@@ -575,7 +599,7 @@ class Store {
       const id = msg.key?.id || msg.id
       if (this.db && this.insertStmt && jid && id) {
          try {
-            this.insertStmt.run(jid, id, JSON.stringify(this.toPOJO(msg)), Date.now())
+            this.insertStmt.run(jid, id, stringify(this.toPOJO(msg)), Date.now())
          } catch { }
       }
    }
@@ -590,7 +614,7 @@ class Store {
       const id = msg.key?.id || msg.id
       if (this.db && this.insertStmt && jid && id) {
          try {
-            this.insertStmt.run(jid, id, JSON.stringify(this.toPOJO(msg)), Date.now())
+            this.insertStmt.run(jid, id, stringify(this.toPOJO(msg)), Date.now())
          } catch { }
       }
    }
@@ -609,7 +633,7 @@ class Store {
                }
             }
             if (rows.length === 0) return null
-            return rows.map(row => JSON.parse(row.data))
+            return rows.map(row => parse(row.data))
          } catch {
             return null
          }
@@ -624,7 +648,7 @@ class Store {
       if (this.db && this.getStoryOneStmt) {
          try {
             const row = this.getStoryOneStmt.get(jid, id) as { data: string } | undefined
-            return row ? JSON.parse(row.data) : null
+            return row ? parse(row.data) : null
          } catch {
             return null
          }
@@ -640,7 +664,7 @@ class Store {
 
       if (this.db && this.insertStoryStmt) {
          try {
-            this.insertStoryStmt.run(jid, storyId, JSON.stringify(this.toPOJO(story)), Date.now())
+            this.insertStoryStmt.run(jid, storyId, stringify(this.toPOJO(story)), Date.now())
          } catch { }
          return
       }
@@ -660,7 +684,7 @@ class Store {
       if (this.db && this.getStoriesAllStmt) {
          try {
             const rows = this.getStoriesAllStmt.all(jid) as { data: string }[]
-            list = rows.map(row => JSON.parse(row.data))
+            list = rows.map(row => parse(row.data))
          } catch { }
       } else {
          list = this.stories[jid] || []
